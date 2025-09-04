@@ -29,7 +29,7 @@ def process_and_verify(bib_text: str, keywords=["Reference", "Bibliography", "Wo
     # Create containers in the main area
     progress_text = st.empty()
     placeholder = st.empty()
-    progress_text.text("Extracting bibliography ...")
+    progress_text.text("正在提取参考文献...")
 
     try:
         references = split_references(bib_text)
@@ -37,28 +37,28 @@ def process_and_verify(bib_text: str, keywords=["Reference", "Bibliography", "Wo
         st.error(str(e))
         return pd.DataFrame()
 
-    ref_type_dict = {"journal_article": "Journal Article", "preprint": "Preprint", "conference_paper": "Conference Paper",
-                     "book": "Book", "book_chapter": "Book Chapter", "non_academic_website": "Website"}
+    ref_type_dict = {"journal_article": "期刊文章", "preprint": "预印本", "conference_paper": "会议论文",
+                     "book": "书籍", "book_chapter": "书籍章节", "non_academic_website": "网站"}
     status_emoji = {
-        "validated": "✅Validated",
-        "invalid": "❌Invalid",
-        "not_found": "⚠️Not Found",
-        "Pending": "⏳Pending"
+        "validated": "✅已验证",
+        "invalid": "❌无效",
+        "not_found": "⚠️未找到",
+        "Pending": "⏳处理中"
     }
 
     results = []
     for idx, ref in enumerate(references):
         results.append({
             "Index": idx,
-            "First Author": ref.author,
-            "Year": str(ref.year),
-            "Title": ref.title,
-            "Type": ref_type_dict.get(ref.type, ref.type),
+            "第一作者": ref.author,
+            "年份": str(ref.year),
+            "标题": ref.title,
+            "类型": ref_type_dict.get(ref.type, ref.type),
             "DOI": ref.DOI,
             "URL": ref.URL,
-            "Raw Text": ref.bib,
-            "Status": "Pending",
-            "Explanation": "Pending"
+            "原始文本": ref.bib,
+            "状态": "处理中",
+            "说明": "处理中"
         })
 
     df = pd.DataFrame(results)
@@ -70,77 +70,73 @@ def process_and_verify(bib_text: str, keywords=["Reference", "Bibliography", "Wo
             'DOI'] != '' and (pd.isna(x['URL']) or x['URL'] == '') else x['URL'], axis=1)
 
     column_config = {
-        "First Author": st.column_config.TextColumn(
-            help="First Author's last name, or organization"),
-        "Year": st.column_config.TextColumn(width="small"),
+        "第一作者": st.column_config.TextColumn(
+            help="第一作者的姓氏或机构"),
+        "年份": st.column_config.TextColumn(width="small"),
         "URL": st.column_config.LinkColumn(width="medium"),
-        "Raw Text": st.column_config.TextColumn(
-            "Raw Reference Text",  # Display name
-            help="Hover for full text",  # Tooltip message
+        "原始文本": st.column_config.TextColumn(
+            "原始参考文献文本",  # Display name
+            help="悬停查看完整文本",  # Tooltip message
             width="medium",  # Width of the column
         ),
-        "Status": st.column_config.TextColumn(
-            help="Reference validation status"
+        "状态": st.column_config.TextColumn(
+            help="参考文献验证状态"
         ),
-        "Explanation": st.column_config.TextColumn(
-            help="Explanation of the validation result"
+        "说明": st.column_config.TextColumn(
+            help="验证结果的说明"
         )
     }
 
     df_display = df[[
-        'First Author', 'Year', 'Title', 'Type', 'URL', 'Raw Text', 'Status', 'Explanation']]
+        '第一作者', '年份', '标题', '类型', 'URL', '原始文本', '状态', '说明']]
     placeholder.dataframe(df_display, use_container_width=True, column_config=column_config)
 
     verified_count = 0
     warning_count = 0
-    progress_text.text(f"Validated: {verified_count} | Invalid/Not Found: {warning_count}")
+    progress_text.text(f"已验证: {verified_count} | 无效/未找到: {warning_count}")
 
     for index, row in df.iterrows():
         result = search_title(references[index])
-        df.loc[index, "Status"] = status_emoji.get(result.status.value, result.status.value)
-        df.loc[index, "Explanation"] = result.explanation
+        df.loc[index, "状态"] = status_emoji.get(result.status.value, result.status.value)
+        df.loc[index, "说明"] = result.explanation
         if result.status == ReferenceStatus.VALIDATED:
             verified_count += 1
         else:
             warning_count += 1
         df_display = df[[
-            'First Author', 'Year', 'Title', 'Type', 'URL', 'Raw Text', 'Status', 'Explanation']]
+            '第一作者', '年份', '标题', '类型', 'URL', '原始文本', '状态', '说明']]
         placeholder.dataframe(df_display, use_container_width=True, column_config=column_config)
-        progress_text.text(f"Validated: {verified_count} | Invalid/Not Found: {warning_count}")
+        progress_text.text(f"已验证: {verified_count} | 无效/未找到: {warning_count}")
 
     return df
 
 
 def main():
-    st.set_page_config(page_title="VeriExCite", page_icon="🔍", layout="wide", initial_sidebar_state="expanded",
+    st.set_page_config(page_title="学佑星途论文引用检测工具", page_icon="🔍", layout="wide", initial_sidebar_state="expanded",
                        menu_items={
-                           "About": "This is a tool to verify citations in academic papers. View the source code on [GitHub](https://github.com/ykangw/VeriExCiting)."})
+                           "About": "这是一个用于验证学术论文中引用文献的工具。在 [GitHub](https://github.com/ykangw/VeriExCiting) 查看源代码。"})
 
-    st.title("VeriExCite: Verify Existing Citations")
+    st.title("学佑星途论文引用检测工具")
     st.write(
-        "This tool helps verify the existence of citations in academic papers (PDF format). "
-        "It extracts the bibliography, parses references, and checks their validity."
+        "此工具帮助验证学术论文（PDF格式）中引用文献的存在性。 "
+        "它提取参考文献，解析引用，并检查其有效性。"
     )
 
     with st.sidebar:
-        st.header("Input")
-        pdf_files = st.file_uploader("Upload one or more PDF files", type="pdf", accept_multiple_files=True)
+        st.header("输入")
+        pdf_files = st.file_uploader("上传一个或多个PDF文件", type="pdf", accept_multiple_files=True)
 
-        use_dev_key = st.checkbox("Use developer's API key for a trial (limited uses)")
         st.write(
-            "You can apply for a Gemini API key at [Google AI Studio](https://ai.google.dev/aistudio) with 1500 requests per day for FREE.")
-        if use_dev_key:
-            api_key = st.secrets["GOOGLE_API_KEY"]
-        else:
-            api_key = st.text_input("Enter your Google Gemini API key:", type="password")
+            "您可以在 [Google AI Studio](https://ai.google.dev/aistudio) 申请 Gemini API 密钥，每天免费提供1500次请求。")
+        api_key = st.text_input("输入您的Google Gemini API密钥:", type="password")
 
-    if st.sidebar.button("Start Verification"):
+    if st.sidebar.button("开始验证"):
         if not pdf_files:
-            st.warning("Please upload at least one PDF file.")
+            st.warning("请至少上传一个PDF文件。")
             return
 
         if not api_key:
-            st.warning("Please enter a Google Gemini API key or select 'Use developer's API key'.")
+            st.warning("请输入Google Gemini API密钥。")
             return
 
         try:
@@ -148,32 +144,32 @@ def main():
             all_results = []
 
             for pdf_file in pdf_files:
-                subheader = st.subheader(f"Processing: {pdf_file.name}")
+                subheader = st.subheader(f"正在处理: {pdf_file.name}")
                 bib_text = extract_bibliography_section(extract_text_from_pdf(pdf_file))
 
                 # Display extracted bibliography text with expander
-                with st.expander(f"Extracted Bibliography Text for {pdf_file.name}"):
-                    st.text_area("Extracted Text", bib_text, height=200, label_visibility="hidden")
+                with st.expander(f"{pdf_file.name} 的提取参考文献文本"):
+                    st.text_area("提取的文本", bib_text, height=200, label_visibility="hidden")
 
                 results_df = process_and_verify(bib_text)
-                results_df['Source File'] = pdf_file.name
+                results_df['源文件'] = pdf_file.name
                 all_results.append(results_df)
-                subheader.subheader(f"Completed: {pdf_file.name}")
+                subheader.subheader(f"已完成: {pdf_file.name}")
 
             if all_results:
                 combined_results = pd.concat(all_results, ignore_index=True)
                 csv = combined_results.to_csv(index=False).encode('utf-8')
                 st.download_button(
-                    label="Download All Results as CSV",
+                    label="下载所有结果为CSV",
                     data=csv,
-                    file_name='VeriCite_results.csv',
+                    file_name='学佑星途引用检测结果.csv',
                     mime='text/csv',
                 )
 
         except ValueError as ve:
             st.error(str(ve))
         except Exception as e:
-            st.error(f"An error occurred: {e}")
+            st.error(f"发生错误: {e}")
 
 
 if __name__ == "__main__":
