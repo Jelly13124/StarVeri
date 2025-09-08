@@ -7,6 +7,7 @@ from veriexcite import (
     ReferenceStatus,  # new import
     find_reference_replacements,  # new import
     ReferenceReplacement,  # new import
+    ReferenceExtraction,  # new import
 )
 import io
 import pandas as pd
@@ -110,7 +111,14 @@ def process_and_verify(bib_text: str, keywords=["Reference", "Bibliography", "Wo
         if result.status in [ReferenceStatus.INVALID, ReferenceStatus.NOT_FOUND]:
             if enable_replacements:
                 progress_text.text(f"正在为无效引用寻找替代方案... ({index + 1}/{len(references)})")
+                
+                # Add some debugging info
+                st.write(f"🔍 搜索替代方案: {references[index].title[:50]}...")
+                
                 replacements = find_reference_replacements(references[index], max_suggestions=2)
+                
+                # Debug: Show what we found
+                st.write(f"📊 找到 {len(replacements)} 个替代方案")
                 
                 if replacements:
                     replacement_text = "建议替代方案:\n"
@@ -161,6 +169,23 @@ def main():
         st.header("选项")
         enable_replacements = st.checkbox("为无效引用提供AI替代建议", value=True, 
                                         help="当发现无效或虚假引用时，AI会搜索并提供真实的替代参考文献")
+        
+        # Test replacement functionality
+        if st.button("🧪 测试替代建议功能"):
+            test_ref = ReferenceExtraction(
+                title="Machine Learning in Healthcare Applications",
+                author="Smith",
+                year="2023",
+                type="journal_article",
+                DOI="",
+                URL="",
+                bib="Smith, J. (2023). Machine Learning in Healthcare Applications. Journal of Medical AI."
+            )
+            st.write("测试引用:", test_ref.title)
+            replacements = find_reference_replacements(test_ref, max_suggestions=2)
+            st.write(f"找到 {len(replacements)} 个替代方案:")
+            for i, rep in enumerate(replacements, 1):
+                st.write(f"{i}. {rep.title} ({rep.author}, {rep.year}) - 置信度: {rep.confidence:.2f}")
 
     if st.sidebar.button("开始验证"):
         if not pdf_files:

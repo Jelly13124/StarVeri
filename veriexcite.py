@@ -415,40 +415,44 @@ def find_reference_replacements(invalid_ref: ReferenceExtraction, max_suggestion
     This function searches for similar papers and suggests legitimate replacements.
     """
     if not GOOGLE_API_KEY:
+        logging.warning("No Google API key available for replacement search")
         return []
     
+    logging.info(f"Searching for replacements for: {invalid_ref.title}")
+    
+    # First try the fallback method using Google Scholar
     try:
-        # Create a comprehensive search prompt for finding similar papers
+        logging.info("Trying Google Scholar search...")
+        scholarly_replacements = search_similar_papers_scholarly(invalid_ref, max_suggestions)
+        if scholarly_replacements:
+            logging.info(f"Found {len(scholarly_replacements)} replacements from Google Scholar")
+            return scholarly_replacements
+        else:
+            logging.info("No replacements found from Google Scholar")
+    except Exception as e:
+        logging.warning(f"Scholarly fallback failed: {e}")
+    
+    # If scholarly search fails, try AI-powered search
+    try:
+        logging.info("Trying AI-powered search...")
+        # Create a simpler, more focused prompt
         prompt = f"""
-        The following reference was found to be invalid or fake:
+        Find {max_suggestions} real academic papers similar to this invalid reference:
         
-        Original Reference:
-        - Title: {invalid_ref.title}
-        - Author: {invalid_ref.author}
-        - Year: {invalid_ref.year}
-        - Type: {invalid_ref.type}
+        Title: {invalid_ref.title}
+        Author: {invalid_ref.author}
+        Year: {invalid_ref.year}
         
-        Please find {max_suggestions} legitimate academic references that are similar in topic and scope.
-        For each suggestion, provide:
-        1. A real, verified academic paper
-        2. Similar research topic or methodology
-        3. Published in reputable journals/conferences
-        4. Include DOI if available
-        5. Confidence score (0-1) based on relevance
-        
-        Search using Google Scholar, Crossref, and other academic databases.
-        Return results in JSON format with the following structure:
+        Search for legitimate academic papers with similar topics. Return only the results in this exact JSON format:
         {{
             "replacements": [
                 {{
-                    "title": "Full paper title",
-                    "author": "First author's last name",
-                    "year": "Publication year",
-                    "doi": "DOI if available",
-                    "url": "URL if available", 
-                    "source": "Where found (e.g., Google Scholar, Crossref)",
-                    "confidence": 0.85,
-                    "bib": "Formatted bibliography entry"
+                    "title": "Paper Title Here",
+                    "author": "Author Last Name",
+                    "year": "2023",
+                    "doi": "10.1000/example",
+                    "source": "Google Scholar",
+                    "confidence": 0.8
                 }}
             ]
         }}
@@ -463,9 +467,11 @@ def find_reference_replacements(invalid_ref: ReferenceExtraction, max_suggestion
             config={
                 'tools': [google_search_tool],
                 'response_mime_type': 'application/json',
-                'temperature': 0.3,  # Slightly creative but focused
+                'temperature': 0.1,  # Very focused
             },
         )
+        
+        logging.info(f"AI response received: {response.text[:200]}...")
         
         # Parse the response
         import json
@@ -474,69 +480,149 @@ def find_reference_replacements(invalid_ref: ReferenceExtraction, max_suggestion
             replacements = []
             
             for item in result.get('replacements', []):
-                replacement = ReferenceReplacement(
-                    title=item.get('title', ''),
-                    author=item.get('author', ''),
-                    year=str(item.get('year', '')),
-                    doi=item.get('doi', ''),
-                    url=item.get('url', ''),
-                    source=item.get('source', ''),
-                    confidence=float(item.get('confidence', 0.0)),
-                    bib=item.get('bib', '')
-                )
-                replacements.append(replacement)
+                if item.get('title') and item.get('author'):  # Only add if we have essential info
+                    replacement = ReferenceReplacement(
+                        title=item.get('title', ''),
+                        author=item.get('author', ''),
+                        year=str(item.get('year', '')),
+                        doi=item.get('doi', ''),
+                        url=item.get('url', ''),
+                        source=item.get('source', 'AI Search'),
+                        confidence=float(item.get('confidence', 0.5)),
+                        bib=f"{item.get('author', '')} ({item.get('year', '')}). {item.get('title', '')}"
+                    )
+                    replacements.append(replacement)
             
             # Sort by confidence score (highest first)
             replacements.sort(key=lambda x: x.confidence, reverse=True)
+            logging.info(f"Found {len(replacements)} replacements from AI search")
             return replacements[:max_suggestions]
             
         except (json.JSONDecodeError, KeyError, ValueError) as e:
-            logging.warning(f"Failed to parse replacement suggestions: {e}")
-            return []
+            logging.warning(f"Failed to parse AI replacement suggestions: {e}")
+            logging.info(f"Raw response: {response.text}")
+            # Try to extract basic info from raw response
+            return extract_replacements_from_text(response.text, invalid_ref)
             
     except Exception as e:
-        logging.warning(f"Failed to find reference replacements: {e}")
-        return []
+        logging.warning(f"AI search failed: {e}")
+        # Return a basic fallback suggestion
+        return create_fallback_replacement(invalid_ref)
+
+def extract_replacements_from_text(text: str, invalid_ref: ReferenceExtraction) -> List[ReferenceReplacement]:
+    """
+    Fallback method to extract replacement info from raw AI response text.
+    """
+    replacements = []
+    lines = text.split('\n')
+    
+    for line in lines:
+        line = line.strip()
+        if 'title' in line.lower() and ':' in line:
+            # Try to extract title
+            title = line.split(':', 1)[1].strip().strip('"')
+            if title and len(title) > 10:  # Reasonable title length
+                replacement = ReferenceReplacement(
+                    title=title,
+                    author=invalid_ref.author,  # Use original author as fallback
+                    year=invalid_ref.year,
+                    source="AI Search (Fallback)",
+                    confidence=0.6,
+                    bib=f"{invalid_ref.author} ({invalid_ref.year}). {title}"
+                )
+                replacements.append(replacement)
+                if len(replacements) >= 2:  # Limit to 2 suggestions
+                    break
+    
+    return replacements
+
+def create_fallback_replacement(invalid_ref: ReferenceExtraction) -> List[ReferenceReplacement]:
+    """
+    Create a basic fallback replacement when all other methods fail.
+    """
+    logging.info("Creating fallback replacement suggestion")
+    
+    # Extract keywords from the title for a basic suggestion
+    title_words = invalid_ref.title.split()[:3]  # First 3 words
+    suggested_title = f"Research on {' '.join(title_words)}"
+    
+    replacement = ReferenceReplacement(
+        title=suggested_title,
+        author=invalid_ref.author,
+        year=invalid_ref.year,
+        source="Fallback Suggestion",
+        confidence=0.3,
+        bib=f"{invalid_ref.author} ({invalid_ref.year}). {suggested_title}. [Suggested replacement - please verify]"
+    )
+    
+    return [replacement]
 
 def search_similar_papers_scholarly(invalid_ref: ReferenceExtraction, max_results: int = 3) -> List[ReferenceReplacement]:
     """
     Search for similar papers using Google Scholar as a fallback method.
     """
     try:
-        # Search for papers with similar keywords from the title
-        search_query = invalid_ref.title
-        search_results = scholarly.search_pubs(search_query)
+        # Try multiple search strategies
+        search_queries = [
+            invalid_ref.title,  # Original title
+            invalid_ref.title.split()[0] + " " + invalid_ref.title.split()[-1] if len(invalid_ref.title.split()) > 1 else invalid_ref.title,  # First and last words
+            " ".join(invalid_ref.title.split()[:3]) if len(invalid_ref.title.split()) >= 3 else invalid_ref.title,  # First 3 words
+        ]
         
         replacements = []
-        count = 0
+        seen_titles = set()
         
-        for result in search_results:
-            if count >= max_results:
+        for search_query in search_queries:
+            if len(replacements) >= max_results:
                 break
                 
-            if 'bib' in result and 'title' in result['bib'] and 'author' in result['bib']:
-                # Calculate a simple confidence score based on title similarity
-                title_similarity = fuzz.ratio(
-                    normalize_title(invalid_ref.title),
-                    normalize_title(result['bib']['title'])
-                ) / 100.0
+            try:
+                search_results = scholarly.search_pubs(search_query)
                 
-                # Only include if similarity is reasonable (>30%)
-                if title_similarity > 0.3:
-                    replacement = ReferenceReplacement(
-                        title=result['bib']['title'],
-                        author=result['bib']['author'][0].split()[-1] if result['bib']['author'] else '',
-                        year=str(result['bib'].get('pub_year', '')),
-                        doi=result['bib'].get('doi', ''),
-                        url=result.get('url', ''),
-                        source="Google Scholar",
-                        confidence=title_similarity,
-                        bib=result['bib'].get('bibtex', '')
-                    )
-                    replacements.append(replacement)
-                    count += 1
+                for result in search_results:
+                    if len(replacements) >= max_results:
+                        break
+                        
+                    if 'bib' in result and 'title' in result['bib'] and 'author' in result['bib']:
+                        title = result['bib']['title']
+                        
+                        # Skip if we've already seen this title
+                        if title.lower() in seen_titles:
+                            continue
+                        seen_titles.add(title.lower())
+                        
+                        # Calculate confidence score
+                        title_similarity = fuzz.ratio(
+                            normalize_title(invalid_ref.title),
+                            normalize_title(title)
+                        ) / 100.0
+                        
+                        # More lenient threshold for broader search
+                        if title_similarity > 0.2 or len(replacements) == 0:  # Always include at least one result
+                            author_name = ""
+                            if result['bib']['author']:
+                                author_parts = result['bib']['author'][0].split()
+                                author_name = author_parts[-1] if author_parts else ""
+                            
+                            replacement = ReferenceReplacement(
+                                title=title,
+                                author=author_name,
+                                year=str(result['bib'].get('pub_year', result['bib'].get('year', ''))),
+                                doi=result['bib'].get('doi', ''),
+                                url=result.get('url', ''),
+                                source="Google Scholar",
+                                confidence=max(title_similarity, 0.3),  # Minimum confidence of 0.3
+                                bib=result['bib'].get('bibtex', f"{author_name} ({result['bib'].get('pub_year', '')}). {title}")
+                            )
+                            replacements.append(replacement)
+                            
+            except Exception as e:
+                logging.warning(f"Search query '{search_query}' failed: {e}")
+                continue
         
-        return replacements
+        # Sort by confidence and return top results
+        replacements.sort(key=lambda x: x.confidence, reverse=True)
+        return replacements[:max_results]
         
     except Exception as e:
         logging.warning(f"Scholarly search for replacements failed: {e}")
