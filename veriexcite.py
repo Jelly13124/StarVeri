@@ -9,8 +9,8 @@ from scholarly import scholarly
 import logging
 from typing import List, Tuple
 from tenacity import retry, stop_after_attempt, wait_exponential
-from google import genai
-from google.genai.types import Tool, GoogleSearch, ThinkingConfig
+import google.generativeai as genai
+from google.generativeai.types import Tool
 from bs4 import BeautifulSoup
 from rapidfuzz import fuzz
 from enum import Enum
@@ -120,21 +120,25 @@ def split_references(bib_text):
     - Bib: Normalised input bibliography (correct format, in one line)\n\n
     """
 
-    client = genai.Client(api_key=GOOGLE_API_KEY)
-    response = client.models.generate_content(
-        model='gemini-2.5-flash',
-        contents=prompt + bib_text,
-        config={
-            'response_mime_type': 'application/json',
-            'response_schema': list[ReferenceExtraction],
-            'temperature': 0,
-            'thinking_config': ThinkingConfig(thinking_budget=0),
-        },
+    genai.configure(api_key=GOOGLE_API_KEY)
+    model = genai.GenerativeModel('gemini-2.5-flash')
+    response = model.generate_content(
+        prompt + bib_text,
+        generation_config=genai.GenerationConfig(
+            response_mime_type='application/json',
+            temperature=0,
+        )
     )
 
-    # print(response.text)  # JSON string.
-    references: list[ReferenceExtraction] = response.parsed  # Parsed JSON.
-    return references
+    # Parse the JSON response
+    import json
+    try:
+        references_data = json.loads(response.text)
+        references = [ReferenceExtraction(**ref) for ref in references_data]
+        return references
+    except (json.JSONDecodeError, TypeError) as e:
+        logging.error(f"Failed to parse references: {e}")
+        return []
 
 
 # --- Step 3: Verify each reference using crossref and compare title ---
@@ -299,18 +303,16 @@ def search_title_workshop_paper(ref: ReferenceExtraction) -> ReferenceCheckResul
         Return only 'True' or 'False', without any additional explanation.
         """
 
-        client = genai.Client(api_key=GOOGLE_API_KEY)
-        google_search_tool = Tool(google_search=GoogleSearch())
-        response = client.models.generate_content(
-            model='gemini-2.0-flash',
-            contents=prompt,
-            config={
-                'tools': [google_search_tool],
-                'temperature': 0,
-            },
+        genai.configure(api_key=GOOGLE_API_KEY)
+        model = genai.GenerativeModel('gemini-2.0-flash')
+        response = model.generate_content(
+            prompt,
+            generation_config=genai.GenerationConfig(
+                temperature=0,
+            )
         )
 
-        answer = normalize_title(response.candidates[0].content.parts[0].text)
+        answer = normalize_title(response.text)
         if answer.startswith('true') or answer.endswith('true'):
             return ReferenceCheckResult(status=ReferenceStatus.VALIDATED, explanation="Workshop paper found via Google search.")
         else:
@@ -364,17 +366,13 @@ def search_title_google(ref: ReferenceExtraction) -> ReferenceCheckResult:
     Author: {ref.author}\n
     Title: {ref.title}\n"""
 
-    client = genai.Client(api_key=GOOGLE_API_KEY)
-    google_search_tool = Tool(google_search=GoogleSearch())
-    response = client.models.generate_content(
-        model='gemini-2.0-flash',
-        contents=prompt,
-        config={
-            'tools': [google_search_tool],
-        },
+    genai.configure(api_key=GOOGLE_API_KEY)
+    model = genai.GenerativeModel('gemini-2.0-flash')
+    response = model.generate_content(
+        prompt,
     )
 
-    answer = normalize_title(response.candidates[0].content.parts[0].text)
+    answer = normalize_title(response.text)
     if answer.startswith('true') or answer.endswith('true'):
         return ReferenceCheckResult(status=ReferenceStatus.VALIDATED, explanation="Google search found matching reference.")
     else:
@@ -458,17 +456,15 @@ def find_reference_replacements(invalid_ref: ReferenceExtraction, max_suggestion
         }}
         """
         
-        client = genai.Client(api_key=GOOGLE_API_KEY)
-        google_search_tool = Tool(google_search=GoogleSearch())
+        genai.configure(api_key=GOOGLE_API_KEY)
+        model = genai.GenerativeModel('gemini-2.0-flash')
         
-        response = client.models.generate_content(
-            model='gemini-2.0-flash',
-            contents=prompt,
-            config={
-                'tools': [google_search_tool],
-                'response_mime_type': 'application/json',
-                'temperature': 0.1,  # Very focused
-            },
+        response = model.generate_content(
+            prompt,
+            generation_config=genai.GenerationConfig(
+                response_mime_type='application/json',
+                temperature=0.1,  # Very focused
+            )
         )
         
         logging.info(f"AI response received: {response.text[:200]}...")
@@ -525,7 +521,7 @@ def extract_replacements_from_text(text: str, invalid_ref: ReferenceExtraction) 
                 replacement = ReferenceReplacement(
                     title=title,
                     author=invalid_ref.author,  # Use original author as fallback
-                    year=invalid_ref.year,
+                    year=str(invalid_ref.year),
                     source="AI Search (Fallback)",
                     confidence=0.6,
                     bib=f"{invalid_ref.author} ({invalid_ref.year}). {title}"
@@ -549,7 +545,7 @@ def create_fallback_replacement(invalid_ref: ReferenceExtraction) -> List[Refere
     replacement = ReferenceReplacement(
         title=suggested_title,
         author=invalid_ref.author,
-        year=invalid_ref.year,
+        year=str(invalid_ref.year),
         source="Fallback Suggestion",
         confidence=0.3,
         bib=f"{invalid_ref.author} ({invalid_ref.year}). {suggested_title}. [Suggested replacement - please verify]"
