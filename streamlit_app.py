@@ -5,6 +5,8 @@ from veriexcite import (
     search_title,
     set_google_api_key,
     ReferenceStatus,  # new import
+    find_reference_replacements,  # new import
+    ReferenceReplacement,  # new import
 )
 import io
 import pandas as pd
@@ -24,7 +26,7 @@ def extract_text_from_pdf(pdf_file: st.runtime.uploaded_file_manager.UploadedFil
     return pdf_content
 
 
-def process_and_verify(bib_text: str, keywords=["Reference", "Bibliography", "Works Cited"]) -> pd.DataFrame:
+def process_and_verify(bib_text: str, keywords=["Reference", "Bibliography", "Works Cited"], enable_replacements: bool = True) -> pd.DataFrame:
     """Extracts, processes, and verifies references."""
     # Create containers in the main area
     progress_text = st.empty()
@@ -58,7 +60,8 @@ def process_and_verify(bib_text: str, keywords=["Reference", "Bibliography", "Wo
             "URL": ref.URL,
             "原始文本": ref.bib,
             "状态": "处理中",
-            "说明": "处理中"
+            "说明": "处理中",
+            "替换建议": ""  # New column for replacement suggestions
         })
 
     df = pd.DataFrame(results)
@@ -84,11 +87,14 @@ def process_and_verify(bib_text: str, keywords=["Reference", "Bibliography", "Wo
         ),
         "说明": st.column_config.TextColumn(
             help="验证结果的说明"
+        ),
+        "替换建议": st.column_config.TextColumn(
+            help="AI建议的真实参考文献替代方案"
         )
     }
 
     df_display = df[[
-        '第一作者', '年份', '标题', '类型', 'URL', '原始文本', '状态', '说明']]
+        '第一作者', '年份', '标题', '类型', 'URL', '原始文本', '状态', '说明', '替换建议']]
     placeholder.dataframe(df_display, use_container_width=True, column_config=column_config)
 
     verified_count = 0
@@ -99,12 +105,34 @@ def process_and_verify(bib_text: str, keywords=["Reference", "Bibliography", "Wo
         result = search_title(references[index])
         df.loc[index, "状态"] = status_emoji.get(result.status.value, result.status.value)
         df.loc[index, "说明"] = result.explanation
-        if result.status == ReferenceStatus.VALIDATED:
-            verified_count += 1
-        else:
+        
+        # If reference is invalid or not found, find replacement suggestions
+        if result.status in [ReferenceStatus.INVALID, ReferenceStatus.NOT_FOUND]:
+            if enable_replacements:
+                progress_text.text(f"正在为无效引用寻找替代方案... ({index + 1}/{len(references)})")
+                replacements = find_reference_replacements(references[index], max_suggestions=2)
+                
+                if replacements:
+                    replacement_text = "建议替代方案:\n"
+                    for i, replacement in enumerate(replacements, 1):
+                        replacement_text += f"{i}. {replacement.title} ({replacement.author}, {replacement.year})\n"
+                        if replacement.doi:
+                            replacement_text += f"   DOI: {replacement.doi}\n"
+                        if replacement.source:
+                            replacement_text += f"   来源: {replacement.source} (置信度: {replacement.confidence:.2f})\n"
+                        replacement_text += "\n"
+                    df.loc[index, "替换建议"] = replacement_text
+                else:
+                    df.loc[index, "替换建议"] = "未找到合适的替代方案"
+            else:
+                df.loc[index, "替换建议"] = "替代建议已禁用"
             warning_count += 1
+        else:
+            df.loc[index, "替换建议"] = "无需替换"
+            verified_count += 1
+            
         df_display = df[[
-            '第一作者', '年份', '标题', '类型', 'URL', '原始文本', '状态', '说明']]
+            '第一作者', '年份', '标题', '类型', 'URL', '原始文本', '状态', '说明', '替换建议']]
         placeholder.dataframe(df_display, use_container_width=True, column_config=column_config)
         progress_text.text(f"已验证: {verified_count} | 无效/未找到: {warning_count}")
 
@@ -129,6 +157,10 @@ def main():
         st.write(
             "您可以在 [Google AI Studio](https://ai.google.dev/aistudio) 申请 Gemini API 密钥，每天免费提供1500次请求。")
         api_key = st.text_input("输入您的Google Gemini API密钥:", type="password")
+        
+        st.header("选项")
+        enable_replacements = st.checkbox("为无效引用提供AI替代建议", value=True, 
+                                        help="当发现无效或虚假引用时，AI会搜索并提供真实的替代参考文献")
 
     if st.sidebar.button("开始验证"):
         if not pdf_files:
@@ -151,7 +183,7 @@ def main():
                 with st.expander(f"{pdf_file.name} 的提取参考文献文本"):
                     st.text_area("提取的文本", bib_text, height=200, label_visibility="hidden")
 
-                results_df = process_and_verify(bib_text)
+                results_df = process_and_verify(bib_text, enable_replacements=enable_replacements)
                 results_df['源文件'] = pdf_file.name
                 all_results.append(results_df)
                 subheader.subheader(f"已完成: {pdf_file.name}")

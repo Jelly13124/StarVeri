@@ -92,6 +92,17 @@ class ReferenceCheckResult(BaseModel):
     status: ReferenceStatus
     explanation: str
 
+class ReferenceReplacement(BaseModel):
+    """Represents a suggested replacement for an invalid reference."""
+    title: str
+    author: str
+    year: str
+    doi: str = ""
+    url: str = ""
+    source: str = ""  # Where this replacement was found (e.g., "Google Scholar", "Crossref")
+    confidence: float = 0.0  # Confidence score 0-1
+    bib: str = ""  # Formatted bibliography entry
+
 def split_references(bib_text):
     """Splits the bibliography text into individual references using the Google Gemini API."""
 
@@ -397,6 +408,139 @@ def search_title(ref: ReferenceExtraction) -> ReferenceCheckResult:
             if result.status == ReferenceStatus.NOT_FOUND:
                 return result
         return ReferenceCheckResult(status=ReferenceStatus.NOT_FOUND, explanation="No evidence found in any source.")
+
+def find_reference_replacements(invalid_ref: ReferenceExtraction, max_suggestions: int = 3) -> List[ReferenceReplacement]:
+    """
+    Find real reference alternatives for an invalid reference using AI.
+    This function searches for similar papers and suggests legitimate replacements.
+    """
+    if not GOOGLE_API_KEY:
+        return []
+    
+    try:
+        # Create a comprehensive search prompt for finding similar papers
+        prompt = f"""
+        The following reference was found to be invalid or fake:
+        
+        Original Reference:
+        - Title: {invalid_ref.title}
+        - Author: {invalid_ref.author}
+        - Year: {invalid_ref.year}
+        - Type: {invalid_ref.type}
+        
+        Please find {max_suggestions} legitimate academic references that are similar in topic and scope.
+        For each suggestion, provide:
+        1. A real, verified academic paper
+        2. Similar research topic or methodology
+        3. Published in reputable journals/conferences
+        4. Include DOI if available
+        5. Confidence score (0-1) based on relevance
+        
+        Search using Google Scholar, Crossref, and other academic databases.
+        Return results in JSON format with the following structure:
+        {{
+            "replacements": [
+                {{
+                    "title": "Full paper title",
+                    "author": "First author's last name",
+                    "year": "Publication year",
+                    "doi": "DOI if available",
+                    "url": "URL if available", 
+                    "source": "Where found (e.g., Google Scholar, Crossref)",
+                    "confidence": 0.85,
+                    "bib": "Formatted bibliography entry"
+                }}
+            ]
+        }}
+        """
+        
+        client = genai.Client(api_key=GOOGLE_API_KEY)
+        google_search_tool = Tool(google_search=GoogleSearch())
+        
+        response = client.models.generate_content(
+            model='gemini-2.0-flash',
+            contents=prompt,
+            config={
+                'tools': [google_search_tool],
+                'response_mime_type': 'application/json',
+                'temperature': 0.3,  # Slightly creative but focused
+            },
+        )
+        
+        # Parse the response
+        import json
+        try:
+            result = json.loads(response.text)
+            replacements = []
+            
+            for item in result.get('replacements', []):
+                replacement = ReferenceReplacement(
+                    title=item.get('title', ''),
+                    author=item.get('author', ''),
+                    year=str(item.get('year', '')),
+                    doi=item.get('doi', ''),
+                    url=item.get('url', ''),
+                    source=item.get('source', ''),
+                    confidence=float(item.get('confidence', 0.0)),
+                    bib=item.get('bib', '')
+                )
+                replacements.append(replacement)
+            
+            # Sort by confidence score (highest first)
+            replacements.sort(key=lambda x: x.confidence, reverse=True)
+            return replacements[:max_suggestions]
+            
+        except (json.JSONDecodeError, KeyError, ValueError) as e:
+            logging.warning(f"Failed to parse replacement suggestions: {e}")
+            return []
+            
+    except Exception as e:
+        logging.warning(f"Failed to find reference replacements: {e}")
+        return []
+
+def search_similar_papers_scholarly(invalid_ref: ReferenceExtraction, max_results: int = 3) -> List[ReferenceReplacement]:
+    """
+    Search for similar papers using Google Scholar as a fallback method.
+    """
+    try:
+        # Search for papers with similar keywords from the title
+        search_query = invalid_ref.title
+        search_results = scholarly.search_pubs(search_query)
+        
+        replacements = []
+        count = 0
+        
+        for result in search_results:
+            if count >= max_results:
+                break
+                
+            if 'bib' in result and 'title' in result['bib'] and 'author' in result['bib']:
+                # Calculate a simple confidence score based on title similarity
+                title_similarity = fuzz.ratio(
+                    normalize_title(invalid_ref.title),
+                    normalize_title(result['bib']['title'])
+                ) / 100.0
+                
+                # Only include if similarity is reasonable (>30%)
+                if title_similarity > 0.3:
+                    replacement = ReferenceReplacement(
+                        title=result['bib']['title'],
+                        author=result['bib']['author'][0].split()[-1] if result['bib']['author'] else '',
+                        year=str(result['bib'].get('pub_year', '')),
+                        doi=result['bib'].get('doi', ''),
+                        url=result.get('url', ''),
+                        source="Google Scholar",
+                        confidence=title_similarity,
+                        bib=result['bib'].get('bibtex', '')
+                    )
+                    replacements.append(replacement)
+                    count += 1
+        
+        return replacements
+        
+    except Exception as e:
+        logging.warning(f"Scholarly search for replacements failed: {e}")
+        return []
 
 # --- Main Workflow ---
 
