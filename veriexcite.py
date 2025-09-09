@@ -93,7 +93,7 @@ class ReferenceReplacement(BaseModel):
     doi: str = ""
     url: str = ""
     source: str = ""  # Where this replacement was found (e.g., "Google Scholar", "Crossref")
-    confidence: float = 0.0  # Confidence score 0-1
+    confidence: float = 0.5  # Confidence score 0-1
     bib: str = ""  # Formatted bibliography entry
 
 def split_references_fallback(bib_text):
@@ -416,6 +416,65 @@ def search_title_arxiv(ref: ReferenceExtraction) -> ReferenceCheckResult:
         logging.warning(f"arXiv search failed for title '{ref.title}': {e}")
         return ReferenceCheckResult(status=ReferenceStatus.NOT_FOUND, explanation=f"arXiv search failed: {e}")
 
+def search_title_workshop_paper(ref: ReferenceExtraction) -> ReferenceCheckResult:
+    """Search specifically for workshop papers using Gemini + Google Search tool."""
+
+    try:
+        # Quick check if it even looks like a workshop paper
+        workshop_indicators = ["workshop", "symposium", "proc.", "proceedings"]
+        if not any(ind in ref.bib.lower() for ind in workshop_indicators):
+            return ReferenceCheckResult(
+                status=ReferenceStatus.NOT_FOUND,
+                explanation="Not a workshop paper."
+            )
+
+        if not GENAI_AVAILABLE or not GOOGLE_API_KEY:
+            return ReferenceCheckResult(
+                status=ReferenceStatus.NOT_FOUND,
+                explanation="Google AI not available for workshop paper search."
+            )
+
+        prompt = f"""
+        Verify if this exact workshop paper exists. Return "True" if a matching record
+        is found with the same title and author, otherwise return "False".
+        Only output "True" or "False".
+
+        Title: {ref.title}
+        Author: {ref.author}
+        Year: {ref.year}
+        """
+
+        client = genai.Client(api_key=GOOGLE_API_KEY)
+        google_search_tool = Tool(google_search=GoogleSearch())
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=prompt,
+            config={
+                "tools": [google_search_tool],
+                "temperature": 0,
+            },
+        )
+
+        answer = response.candidates[0].content.parts[0].text.strip().lower()
+        if "true" in answer:
+            return ReferenceCheckResult(
+                status=ReferenceStatus.VALIDATED,
+                explanation="Workshop paper found via Google search."
+            )
+        else:
+            return ReferenceCheckResult(
+                status=ReferenceStatus.NOT_FOUND,
+                explanation="Workshop paper not found via Google search."
+            )
+
+    except Exception as e:
+        logging.warning(f"Workshop paper search failed for title '{ref.title}': {e}")
+        return ReferenceCheckResult(
+            status=ReferenceStatus.NOT_FOUND,
+            explanation=f"Workshop paper search failed: {e}"
+        )
+
+
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
 def search_title_google(ref: ReferenceExtraction) -> ReferenceCheckResult:
     """Search for a reference title using Gemini + Google Search tool."""
@@ -490,38 +549,6 @@ def verify_url(ref: ReferenceExtraction) -> ReferenceCheckResult:
     except Exception as e:
         logging.warning(f"Error processing URL {ref.URL}: {e}")
         return search_title_google(ref)
-
-
-def search_title_google(ref: ReferenceExtraction) -> ReferenceCheckResult:
-    """Searches for a title using Google Search and match using a LLM model."""
-    
-    if not GENAI_AVAILABLE or not GOOGLE_API_KEY:
-        return ReferenceCheckResult(status=ReferenceStatus.NOT_FOUND, explanation="Google AI not available for search.")
-
-    prompt = f"""
-    Please search for the reference on Google, compare with research results, and determine if it is genuine.\n
-    Return 'True' only if a website with the the exact title and author is found. Otherwise, return 'False'.\n
-    Return only 'True' or 'False', without any additional information.\n\n
-    Author: {ref.author}\n
-    Title: {ref.title}\n"""
-
-    client = genai.Client(api_key=GOOGLE_API_KEY)
-    google_search_tool = Tool(google_search=GoogleSearch())
-    response = client.models.generate_content(
-        model="gemini-2.0-flash",
-        contents=prompt,
-        config={
-            "tools": [google_search_tool],
-            "temperature": 0,
-        },
-    )
-
-
-    answer = normalize_title(response.text)
-    if answer.startswith('true') or answer.endswith('true'):
-        return ReferenceCheckResult(status=ReferenceStatus.VALIDATED, explanation="Google search found matching reference.")
-    else:
-        return ReferenceCheckResult(status=ReferenceStatus.NOT_FOUND, explanation="Google search did not find matching reference.")
 
 def search_title(ref: ReferenceExtraction) -> ReferenceCheckResult:
     """Searches for a title using multiple methods."""
