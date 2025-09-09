@@ -9,8 +9,15 @@ from scholarly import scholarly
 import logging
 from typing import List, Tuple
 from tenacity import retry, stop_after_attempt, wait_exponential
-import google.generativeai as genai
-from google.generativeai.types import Tool
+try:
+    import google.generativeai as genai
+    from google.generativeai.types import Tool
+    GENAI_AVAILABLE = True
+except ImportError:
+    genai = None
+    Tool = None
+    GENAI_AVAILABLE = False
+    print("Warning: Google Generative AI library not available. Some features will be disabled.")
 from bs4 import BeautifulSoup
 from rapidfuzz import fuzz
 from enum import Enum
@@ -105,6 +112,12 @@ class ReferenceReplacement(BaseModel):
 
 def split_references(bib_text):
     """Splits the bibliography text into individual references using the Google Gemini API."""
+    
+    if not GENAI_AVAILABLE:
+        raise ValueError("Google Generative AI library is not available. Please install google-generativeai package.")
+    
+    if not GOOGLE_API_KEY:
+        raise ValueError("Google API key is not set. Please provide a valid API key.")
 
     prompt = """
     Process a reference list extracted from a PDF, where formatting may be corrupted.  
@@ -311,6 +324,9 @@ def search_title_workshop_paper(ref: ReferenceExtraction) -> ReferenceCheckResul
         
         if not is_likely_workshop:
             return ReferenceCheckResult(status=ReferenceStatus.NOT_FOUND, explanation="Not a workshop paper.")
+        
+        if not GENAI_AVAILABLE or not GOOGLE_API_KEY:
+            return ReferenceCheckResult(status=ReferenceStatus.NOT_FOUND, explanation="Google AI not available for workshop paper search.")
             
         # Use Google search through the Google Gemini API with more specific prompt
         prompt = f"""
@@ -380,6 +396,9 @@ def verify_url(ref: ReferenceExtraction) -> ReferenceCheckResult:
 
 def search_title_google(ref: ReferenceExtraction) -> ReferenceCheckResult:
     """Searches for a title using Google Search and match using a LLM model."""
+    
+    if not GENAI_AVAILABLE or not GOOGLE_API_KEY:
+        return ReferenceCheckResult(status=ReferenceStatus.NOT_FOUND, explanation="Google AI not available for search.")
 
     prompt = f"""
     Please search for the reference on Google, compare with research results, and determine if it is genuine.\n
@@ -434,9 +453,9 @@ def find_reference_replacements(invalid_ref: ReferenceExtraction, max_suggestion
     Find real reference alternatives for an invalid reference using AI.
     This function searches for similar papers and suggests legitimate replacements.
     """
-    if not GOOGLE_API_KEY:
-        logging.warning("No Google API key available for replacement search")
-        return []
+    if not GENAI_AVAILABLE or not GOOGLE_API_KEY:
+        logging.warning("Google AI not available for replacement search")
+        return create_fallback_replacement(invalid_ref)
     
     logging.info(f"Searching for replacements for: {invalid_ref.title}")
     
@@ -454,6 +473,10 @@ def find_reference_replacements(invalid_ref: ReferenceExtraction, max_suggestion
     
     # If scholarly search fails, try AI-powered search
     try:
+        if not GENAI_AVAILABLE or not GOOGLE_API_KEY:
+            logging.info("Google AI not available, skipping AI search")
+            return create_fallback_replacement(invalid_ref)
+            
         logging.info("Trying AI-powered search...")
         # Create a simpler, more focused prompt
         prompt = f"""
