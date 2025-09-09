@@ -281,15 +281,16 @@ def split_references(bib_text):
     Return the results as a JSON array with lowercase field names: title, author, DOI, URL, year, type, bib\n\n
     """
 
-    genai.configure(api_key=GOOGLE_API_KEY)
-    model = genai.GenerativeModel('gemini-2.5-flash')
-    response = model.generate_content(
-        prompt + bib_text,
-        generation_config=genai.GenerationConfig(
-            response_mime_type='application/json',
+    client = genai.Client(api_key=GOOGLE_API_KEY)
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=prompt + bib_text,
+        config=genai.types.GenerateContentConfig(
+            response_mime_type="application/json",
             temperature=0,
-        )
+        ),
     )
+
 
     # Parse the JSON response
     import json
@@ -487,14 +488,12 @@ def search_title_workshop_paper(ref: ReferenceExtraction) -> ReferenceCheckResul
         Return only 'True' or 'False', without any additional explanation.
         """
 
-        genai.configure(api_key=GOOGLE_API_KEY)
-        model = genai.GenerativeModel('gemini-2.0-flash')
-        response = model.generate_content(
-            prompt,
-            generation_config=genai.GenerationConfig(
-                temperature=0,
-            )
+        client = genai.Client(api_key=GOOGLE_API_KEY)
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=prompt,
         )
+
 
         answer = normalize_title(response.text)
         if answer.startswith('true') or answer.endswith('true'):
@@ -553,10 +552,10 @@ def search_title_google(ref: ReferenceExtraction) -> ReferenceCheckResult:
     Author: {ref.author}\n
     Title: {ref.title}\n"""
 
-    genai.configure(api_key=GOOGLE_API_KEY)
-    model = genai.GenerativeModel('gemini-2.0-flash')
-    response = model.generate_content(
-        prompt,
+    client = genai.Client(api_key=GOOGLE_API_KEY)
+    response = client.models.generate_content(
+        model="gemini-2.0-flash",
+        contents=prompt
     )
 
     answer = normalize_title(response.text)
@@ -647,16 +646,16 @@ def find_reference_replacements(invalid_ref: ReferenceExtraction, max_suggestion
         }}
         """
         
-        genai.configure(api_key=GOOGLE_API_KEY)
-        model = genai.GenerativeModel('gemini-2.0-flash')
-        
-        response = model.generate_content(
-            prompt,
-            generation_config=genai.GenerationConfig(
-                response_mime_type='application/json',
-                temperature=0.1,  # Very focused
-            )
+        client = genai.Client(api_key=GOOGLE_API_KEY)
+        response = client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=prompt,
+            config=genai.types.GenerateContentConfig(
+            response_mime_type="application/json",
+            temperature=0.1,
+            ),
         )
+
         
         logging.info(f"AI response received: {response.text[:200]}...")
         
