@@ -601,15 +601,17 @@ def find_reference_replacements(invalid_ref: ReferenceExtraction, max_suggestion
         Year: {invalid_ref.year}
 
         Task:
-        - Suggest up to {max_suggestions} real academic references on a similar topic.
-        - Prefer journal articles, conference papers, or books with reliable metadata.
-        - - If no exact matches are found, return closely related well-known real works in the same field.
-        - Never return an empty list.
-        - Use the fields: title, author, year, doi, url, source, confidence, bib.
+        1. Infer the main research topic or field from the above reference.
+        2. Suggest up to {max_suggestions} *real academic works* related to this topic.
+           - They do not need to match the invalid title exactly.
+           - Prefer widely recognized or peer-reviewed sources.
+        3. For each reference, provide:
+           title, author, year, doi (if available), url (if available), source, confidence (0–1), and bib.
+        4. Never return an empty list.
         """
 
         response = client.models.generate_content(
-            model="gemini-2.0-flash",
+            model="gemini-2.5-flash",
             contents=prompt,
             config={
                 "tools": [google_search_tool],
