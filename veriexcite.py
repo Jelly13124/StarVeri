@@ -11,7 +11,7 @@ from typing import List, Tuple
 from tenacity import retry, stop_after_attempt, wait_exponential
 try:
     import google.genai as genai
-    from google.genai.types import Tool
+    from google.genai.types import Tool, GoogleSearch, ThinkingConfig  # ← add these
     GENAI_AVAILABLE = True
 except ImportError:
     genai = None
@@ -51,20 +51,6 @@ def extract_bibliography_section(text: str, keywords: List[str] = [
     "参考文献", "參考文獻",
     # Japanese
     "参考資料",
-    # French
-    "Références", "Bibliographie",
-    # German
-    "Literaturverzeichnis", "Quellenverzeichnis",
-    # Spanish
-    "Referencias", "Bibliografía",
-    # Russian
-    "Список литературы",
-    # Italian
-    "Riferimenti", "Bibliografia",
-    # Portuguese
-    "Referências", "Bibliografia",
-    # Korean
-    "참고문헌"
 ]) -> str:
     """
     Find the last occurrence of any keyword from 'keywords'
@@ -260,67 +246,36 @@ def parse_single_reference_fallback(ref_text):
 
 def split_references(bib_text):
     """Splits the bibliography text into individual references using the Google Gemini API."""
-    
-    if not GENAI_AVAILABLE or not GOOGLE_API_KEY:
-        logging.warning("Google AI not available, using fallback reference parser")
-        return split_references_fallback(bib_text)
 
     prompt = """
     Process a reference list extracted from a PDF, where formatting may be corrupted.  
-    Follow these steps to clean and extract key information: 
-    1. Normalisation: Fix spacing errors, line breaks, and punctuation.
-    2. Extraction: For each reference, extract:
+    For each reference, extract these fields:
     - title (full title case)
-    - author: First author's family name (If the author is an organization, use the organization name)
+    - author: first author's family name (or organization name if applicable)
     - DOI (include if explicitly stated; otherwise leave blank)
     - URL (include if explicitly stated; otherwise leave blank)
     - year (4-digit publication year)
-    - type (journal_article, preprint, conference_paper, book, book_chapter, OR non_academic_website. If the author is not a human but an organization, select non_academic_website)
-    - bib: Normalised input bibliography (correct format, in one line)
-    
-    Return the results as a JSON array with lowercase field names: title, author, DOI, URL, year, type, bib\n\n
+    - type (journal_article, preprint, conference_paper, book, book_chapter, OR non_academic_website)
+    - bib: normalized bibliography entry (one line)
+
+    Return the results as JSON array with keys: title, author, DOI, URL, year, type, bib
     """
 
     client = genai.Client(api_key=GOOGLE_API_KEY)
     response = client.models.generate_content(
         model="gemini-2.5-flash",
         contents=prompt + bib_text,
-        config=genai.types.GenerateContentConfig(
-            response_mime_type="application/json",
-            temperature=0,
-        ),
+        config={
+            "response_mime_type": "application/json",
+            "response_schema": list[ReferenceExtraction],  # 👈 SDK maps into Pydantic
+            "temperature": 0,
+            "thinking_config": ThinkingConfig(thinking_budget=0),
+        },
     )
 
-
-    # Parse the JSON response
-    import json
-    try:
-        references_data = json.loads(response.text)
-        
-        # Normalize field names to lowercase
-        normalized_refs = []
-        for ref in references_data:
-            normalized_ref = {}
-            for key, value in ref.items():
-                # Map common capitalized field names to lowercase
-                field_mapping = {
-                    'Title': 'title',
-                    'Author': 'author', 
-                    'DOI': 'DOI',
-                    'URL': 'URL',
-                    'Year': 'year',
-                    'Type': 'type',
-                    'Bib': 'bib'
-                }
-                normalized_key = field_mapping.get(key, key.lower())
-                normalized_ref[normalized_key] = value
-            normalized_refs.append(normalized_ref)
-        
-        references = [ReferenceExtraction(**ref) for ref in normalized_refs]
-        return references
-    except (json.JSONDecodeError, TypeError) as e:
-        logging.error(f"Failed to parse references: {e}")
-        return []
+    # Structured output (auto-parsed into ReferenceExtraction models)
+    references: list[ReferenceExtraction] = response.parsed or []
+    return references
 
 
 # --- Step 3: Verify each reference using crossref and compare title ---
@@ -462,48 +417,46 @@ def search_title_arxiv(ref: ReferenceExtraction) -> ReferenceCheckResult:
         return ReferenceCheckResult(status=ReferenceStatus.NOT_FOUND, explanation=f"arXiv search failed: {e}")
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
-def search_title_workshop_paper(ref: ReferenceExtraction) -> ReferenceCheckResult:
-    """Searches for workshop papers using Google Search directly."""
-    try:
-        # Check if it's likely a workshop paper from the reference text
-        workshop_indicators = ['workshop', 'symposium', 'proc.', 'proceedings']
-        is_likely_workshop = any(indicator in ref.bib.lower() for indicator in workshop_indicators)
-        
-        if not is_likely_workshop:
-            return ReferenceCheckResult(status=ReferenceStatus.NOT_FOUND, explanation="Not a workshop paper.")
-        
-        if not GENAI_AVAILABLE or not GOOGLE_API_KEY:
-            return ReferenceCheckResult(status=ReferenceStatus.NOT_FOUND, explanation="Google AI not available for workshop paper search.")
-            
-        # Use Google search through the Google Gemini API with more specific prompt
-        prompt = f"""
-        Please search for this exact workshop paper and verify it exists:
-        Title: {ref.title}
-        Author: {ref.author}
-        Year: {ref.year}
-        
-        This paper appears to be from a workshop or symposium. Check conferences, workshops, 
-        and personal/university pages. Return 'True' only if you can find evidence this 
-        specific workshop paper exists (exact title and author match). Return 'False' otherwise.
-        Return only 'True' or 'False', without any additional explanation.
-        """
+def search_title_google(ref: ReferenceExtraction) -> ReferenceCheckResult:
+    """Search for a reference title using Gemini + Google Search tool."""
 
-        client = genai.Client(api_key=GOOGLE_API_KEY)
-        response = client.models.generate_content(
-            model="gemini-2.0-flash",
-            contents=prompt,
+    if not GENAI_AVAILABLE or not GOOGLE_API_KEY:
+        return ReferenceCheckResult(
+            status=ReferenceStatus.NOT_FOUND,
+            explanation="Google AI not available for search."
         )
 
+    prompt = f"""
+    Please search for the following reference on Google.
+    Return "True" if you find a website with the exact title and author,
+    otherwise return "False". Only output "True" or "False".
 
-        answer = normalize_title(response.text)
-        if answer.startswith('true') or answer.endswith('true'):
-            return ReferenceCheckResult(status=ReferenceStatus.VALIDATED, explanation="Workshop paper found via Google search.")
-        else:
-            return ReferenceCheckResult(status=ReferenceStatus.NOT_FOUND, explanation="Workshop paper not found via Google search.")
-            
-    except Exception as e:
-        logging.warning(f"Workshop paper search failed for title '{ref.title}': {e}")
-        return ReferenceCheckResult(status=ReferenceStatus.NOT_FOUND, explanation=f"Workshop paper search failed: {e}")
+    Author: {ref.author}
+    Title: {ref.title}
+    """
+
+    client = genai.Client(api_key=GOOGLE_API_KEY)
+    google_search_tool = Tool(google_search=GoogleSearch())
+    response = client.models.generate_content(
+        model="gemini-2.0-flash",
+        contents=prompt,
+        config={
+            "tools": [google_search_tool],
+            "temperature": 0,
+        },
+    )
+
+    answer = response.candidates[0].content.parts[0].text.strip().lower()
+    if "true" in answer:
+        return ReferenceCheckResult(
+            status=ReferenceStatus.VALIDATED,
+            explanation="Google search found matching reference."
+        )
+    else:
+        return ReferenceCheckResult(
+            status=ReferenceStatus.NOT_FOUND,
+            explanation="Google search did not find matching reference."
+        )
 
 def verify_url(ref: ReferenceExtraction) -> ReferenceCheckResult:
     """
@@ -553,10 +506,16 @@ def search_title_google(ref: ReferenceExtraction) -> ReferenceCheckResult:
     Title: {ref.title}\n"""
 
     client = genai.Client(api_key=GOOGLE_API_KEY)
+    google_search_tool = Tool(google_search=GoogleSearch())
     response = client.models.generate_content(
         model="gemini-2.0-flash",
-        contents=prompt
+        contents=prompt,
+        config={
+            "tools": [google_search_tool],
+            "temperature": 0,
+        },
     )
+
 
     answer = normalize_title(response.text)
     if answer.startswith('true') or answer.endswith('true'):
@@ -595,132 +554,47 @@ def search_title(ref: ReferenceExtraction) -> ReferenceCheckResult:
 
 def find_reference_replacements(invalid_ref: ReferenceExtraction, max_suggestions: int = 3) -> List[ReferenceReplacement]:
     """
-    Find real reference alternatives for an invalid reference using AI.
-    This function searches for similar papers and suggests legitimate replacements.
+    Suggest legitimate academic references to replace an invalid one.
+    Uses structured outputs so no manual JSON parsing is needed.
     """
-    if not GENAI_AVAILABLE or not GOOGLE_API_KEY:
-        logging.warning("Google AI not available for replacement search")
-        return create_fallback_replacement(invalid_ref)
-    
-    logging.info(f"Searching for replacements for: {invalid_ref.title}")
-    
-    # First try the fallback method using Google Scholar
+    if not GOOGLE_API_KEY:
+        logging.warning("No Google API key set, cannot search replacements.")
+        return []
+
     try:
-        logging.info("Trying Google Scholar search...")
-        scholarly_replacements = search_similar_papers_scholarly(invalid_ref, max_suggestions)
-        if scholarly_replacements:
-            logging.info(f"Found {len(scholarly_replacements)} replacements from Google Scholar")
-            return scholarly_replacements
-        else:
-            logging.info("No replacements found from Google Scholar")
-    except Exception as e:
-        logging.warning(f"Scholarly fallback failed: {e}")
-    
-    # If scholarly search fails, try AI-powered search
-    try:
-        if not GENAI_AVAILABLE or not GOOGLE_API_KEY:
-            logging.info("Google AI not available, skipping AI search")
-            return create_fallback_replacement(invalid_ref)
-            
-        logging.info("Trying AI-powered search...")
-        # Create a simpler, more focused prompt
+        client = genai.Client(api_key=GOOGLE_API_KEY)
+        google_search_tool = Tool(google_search=GoogleSearch())
+
         prompt = f"""
-        Find {max_suggestions} real academic papers similar to this invalid reference:
-        
+        The following reference could not be validated:
+
         Title: {invalid_ref.title}
         Author: {invalid_ref.author}
         Year: {invalid_ref.year}
-        
-        Search for legitimate academic papers with similar topics. Return only the results in this exact JSON format:
-        {{
-            "replacements": [
-                {{
-                    "title": "Paper Title Here",
-                    "author": "Author Last Name",
-                    "year": "2023",
-                    "doi": "10.1000/example",
-                    "source": "Google Scholar",
-                    "confidence": 0.8
-                }}
-            ]
-        }}
+
+        Suggest {max_suggestions} real academic papers on a similar topic.
+        Return only JSON in the format required by ReferenceReplacement.
         """
-        
-        client = genai.Client(api_key=GOOGLE_API_KEY)
+
         response = client.models.generate_content(
             model="gemini-2.0-flash",
             contents=prompt,
-            config=genai.types.GenerateContentConfig(
-            response_mime_type="application/json",
-            temperature=0.1,
-            ),
+            config={
+                "tools": [google_search_tool],
+                "response_mime_type": "application/json",
+                "response_schema": list[ReferenceReplacement],
+                "temperature": 0.2,
+            },
         )
 
-        
-        logging.info(f"AI response received: {response.text[:200]}...")
-        
-        # Parse the response
-        import json
-        try:
-            result = json.loads(response.text)
-            replacements = []
-            
-            for item in result.get('replacements', []):
-                if item.get('title') and item.get('author'):  # Only add if we have essential info
-                    replacement = ReferenceReplacement(
-                        title=item.get('title', ''),
-                        author=item.get('author', ''),
-                        year=str(item.get('year', '')),
-                        doi=item.get('doi', ''),
-                        url=item.get('url', ''),
-                        source=item.get('source', 'AI Search'),
-                        confidence=float(item.get('confidence', 0.5)),
-                        bib=f"{item.get('author', '')} ({item.get('year', '')}). {item.get('title', '')}"
-                    )
-                    replacements.append(replacement)
-            
-            # Sort by confidence score (highest first)
-            replacements.sort(key=lambda x: x.confidence, reverse=True)
-            logging.info(f"Found {len(replacements)} replacements from AI search")
-            return replacements[:max_suggestions]
-            
-        except (json.JSONDecodeError, KeyError, ValueError) as e:
-            logging.warning(f"Failed to parse AI replacement suggestions: {e}")
-            logging.info(f"Raw response: {response.text}")
-            # Try to extract basic info from raw response
-            return extract_replacements_from_text(response.text, invalid_ref)
-            
-    except Exception as e:
-        logging.warning(f"AI search failed: {e}")
-        # Return a basic fallback suggestion
-        return create_fallback_replacement(invalid_ref)
+        replacements: List[ReferenceReplacement] = response.parsed or []
+        replacements.sort(key=lambda r: r.confidence, reverse=True)
+        return replacements[:max_suggestions]
 
-def extract_replacements_from_text(text: str, invalid_ref: ReferenceExtraction) -> List[ReferenceReplacement]:
-    """
-    Fallback method to extract replacement info from raw AI response text.
-    """
-    replacements = []
-    lines = text.split('\n')
-    
-    for line in lines:
-        line = line.strip()
-        if 'title' in line.lower() and ':' in line:
-            # Try to extract title
-            title = line.split(':', 1)[1].strip().strip('"')
-            if title and len(title) > 10:  # Reasonable title length
-                replacement = ReferenceReplacement(
-                    title=title,
-                    author=invalid_ref.author,  # Use original author as fallback
-                    year=str(invalid_ref.year),
-                    source="AI Search (Fallback)",
-                    confidence=0.6,
-                    bib=f"{invalid_ref.author} ({invalid_ref.year}). {title}"
-                )
-                replacements.append(replacement)
-                if len(replacements) >= 2:  # Limit to 2 suggestions
-                    break
-    
-    return replacements
+    except Exception as e:
+        logging.warning(f"Replacement suggestion failed: {e}")
+        return []
+
 
 def create_fallback_replacement(invalid_ref: ReferenceExtraction) -> List[ReferenceReplacement]:
     """
