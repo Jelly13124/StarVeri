@@ -110,14 +110,160 @@ class ReferenceReplacement(BaseModel):
     confidence: float = 0.0  # Confidence score 0-1
     bib: str = ""  # Formatted bibliography entry
 
+def split_references_fallback(bib_text):
+    """
+    Fallback method to split references using simple rule-based parsing.
+    This is used when Google AI is not available.
+    """
+    import re
+    
+    # Split by common reference patterns
+    # Look for patterns like [1], (1), 1., etc.
+    reference_patterns = [
+        r'\[\d+\]',  # [1], [2], etc.
+        r'\(\d+\)',  # (1), (2), etc.
+        r'^\d+\.',   # 1., 2., etc. at start of line
+        r'^\d+\s',   # 1 , 2 , etc. at start of line
+    ]
+    
+    # Try to split by the most common pattern first
+    references = []
+    lines = bib_text.split('\n')
+    current_ref = []
+    
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+            
+        # Check if this line starts a new reference
+        is_new_ref = False
+        for pattern in reference_patterns:
+            if re.match(pattern, line):
+                is_new_ref = True
+                break
+        
+        if is_new_ref and current_ref:
+            # Process the previous reference
+            ref_text = ' '.join(current_ref).strip()
+            if ref_text:
+                ref = parse_single_reference_fallback(ref_text)
+                if ref:
+                    references.append(ref)
+            current_ref = [line]
+        else:
+            current_ref.append(line)
+    
+    # Process the last reference
+    if current_ref:
+        ref_text = ' '.join(current_ref).strip()
+        if ref_text:
+            ref = parse_single_reference_fallback(ref_text)
+            if ref:
+                references.append(ref)
+    
+    return references
+
+def parse_single_reference_fallback(ref_text):
+    """
+    Parse a single reference text using simple rules.
+    """
+    import re
+    
+    # Remove reference numbers at the beginning
+    ref_text = re.sub(r'^[\[\(]?\d+[\]\)]?\s*', '', ref_text).strip()
+    
+    # Try to extract year (4-digit number)
+    year_match = re.search(r'\b(19|20)\d{2}\b', ref_text)
+    year = int(year_match.group()) if year_match else 2020
+    
+    # Try to extract author (usually first word or first few words before year)
+    author = "Unknown"
+    if year_match:
+        before_year = ref_text[:year_match.start()].strip()
+        # Look for common author patterns
+        author_patterns = [
+            r'^([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)',  # FirstName LastName
+            r'^([A-Z][a-z]+)',  # Single name
+        ]
+        for pattern in author_patterns:
+            match = re.match(pattern, before_year)
+            if match:
+                author = match.group(1).split()[-1]  # Take last name
+                break
+    
+    # Extract title (look for text between author and year)
+    title = ref_text
+    if year_match:
+        # Look for title between author and year
+        before_year = ref_text[:year_match.start()].strip()
+        
+        # Try to find title after author name
+        if author != "Unknown" and author in before_year:
+            # Find the position after the author name
+            author_pos = before_year.find(author)
+            if author_pos != -1:
+                after_author = before_year[author_pos + len(author):].strip()
+                # Remove common prefixes and clean up
+                after_author = re.sub(r'^[.,\s]+', '', after_author)  # Remove leading punctuation
+                if len(after_author) > 10:
+                    title = after_author
+        else:
+            # If no clear author, try to extract title from the beginning
+            # Look for patterns like "Title. Journal" or "Title, Journal"
+            title_match = re.match(r'^([^.]{10,}?)(?:\.|,)\s*(?:[A-Z][a-z]+|Journal|Proc|Proceedings)', before_year)
+            if title_match:
+                title = title_match.group(1).strip()
+            elif len(before_year) > 10:
+                title = before_year
+    
+    # Clean up title
+    title = re.sub(r'^[.,\s]+', '', title)  # Remove leading punctuation
+    title = re.sub(r'[.,\s]+$', '', title)  # Remove trailing punctuation
+    if len(title) > 200:
+        title = title[:200] + "..."
+    
+    # Determine type based on content
+    ref_lower = ref_text.lower()
+    if any(word in ref_lower for word in ['journal', 'j.', 'vol.', 'volume']):
+        ref_type = "journal_article"
+    elif any(word in ref_lower for word in ['conference', 'proc.', 'proceedings']):
+        ref_type = "conference_paper"
+    elif any(word in ref_lower for word in ['arxiv', 'preprint']):
+        ref_type = "preprint"
+    elif any(word in ref_lower for word in ['book', 'chapter']):
+        ref_type = "book"
+    else:
+        ref_type = "journal_article"  # Default
+    
+    # Extract DOI if present
+    doi_match = re.search(r'10\.\d+/[^\s]+', ref_text)
+    doi = doi_match.group() if doi_match else ""
+    
+    # Extract URL if present
+    url_match = re.search(r'https?://[^\s]+', ref_text)
+    url = url_match.group() if url_match else ""
+    
+    try:
+        return ReferenceExtraction(
+            title=title,
+            author=author,
+            DOI=doi,
+            URL=url,
+            year=year,
+            type=ref_type,
+            bib=ref_text
+        )
+    except Exception as e:
+        logging.warning(f"Failed to parse reference: {e}")
+        return None
+
 def split_references(bib_text):
     """Splits the bibliography text into individual references using the Google Gemini API."""
     
-    if not GENAI_AVAILABLE:
-        raise ValueError("Google Generative AI library is not available. Please install google-generativeai package.")
-    
-    if not GOOGLE_API_KEY:
-        raise ValueError("Google API key is not set. Please provide a valid API key.")
+    if not GENAI_AVAILABLE or not GOOGLE_API_KEY:
+        logging.warning("Google AI not available, using fallback reference parser")
+        return split_references_fallback(bib_text)
 
     prompt = """
     Process a reference list extracted from a PDF, where formatting may be corrupted.  
