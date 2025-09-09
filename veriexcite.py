@@ -88,8 +88,8 @@ class ReferenceCheckResult(BaseModel):
 class ReferenceReplacement(BaseModel):
     """Represents a suggested replacement for an invalid reference."""
     title: str
-    author: str
-    year: str
+    author: str = ""
+    year: str = ""
     doi: str = ""
     url: str = ""
     source: str = ""  # Where this replacement was found (e.g., "Google Scholar", "Crossref")
@@ -603,7 +603,8 @@ def find_reference_replacements(invalid_ref: ReferenceExtraction, max_suggestion
         Task:
         - Suggest up to {max_suggestions} real academic references on a similar topic.
         - Prefer journal articles, conference papers, or books with reliable metadata.
-        - Always return at least one replacement (never return an empty list).
+        - - If no exact matches are found, return closely related well-known real works in the same field.
+        - Never return an empty list.
         - Use the fields: title, author, year, doi, url, source, confidence, bib.
         """
 
@@ -614,7 +615,7 @@ def find_reference_replacements(invalid_ref: ReferenceExtraction, max_suggestion
                 "tools": [google_search_tool],
                 "response_mime_type": "application/json",
                 "response_schema": list[ReferenceReplacement],
-                "temperature": 0.3,  # allow some flexibility
+                "temperature": 0.6,  # allow some flexibility
             },
         )
 
