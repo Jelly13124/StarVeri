@@ -600,15 +600,19 @@ def search_similar_papers_scholarly(invalid_ref: ReferenceExtraction, max_result
                                 author_parts = result['bib']['author'][0].split()
                                 author_name = author_parts[-1] if author_parts else ""
                             
+                            # Ensure year is converted to string
+                            year_value = result['bib'].get('pub_year', result['bib'].get('year', ''))
+                            year_str = str(year_value) if year_value else ''
+                            
                             replacement = ReferenceReplacement(
                                 title=title,
                                 author=author_name,
-                                year=str(result['bib'].get('pub_year', result['bib'].get('year', ''))),
+                                year=year_str,
                                 doi=result['bib'].get('doi', ''),
                                 url=result.get('url', ''),
                                 source="Google Scholar",
                                 confidence=max(title_similarity, 0.3),  # Minimum confidence of 0.3
-                                bib=result['bib'].get('bibtex', f"{author_name} ({result['bib'].get('pub_year', '')}). {title}")
+                                bib=result['bib'].get('bibtex', f"{author_name} ({year_str}). {title}")
                             )
                             replacements.append(replacement)
                             
