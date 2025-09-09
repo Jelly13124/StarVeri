@@ -582,10 +582,11 @@ def search_title(ref: ReferenceExtraction) -> ReferenceCheckResult:
 def find_reference_replacements(invalid_ref: ReferenceExtraction, max_suggestions: int = 3) -> List[ReferenceReplacement]:
     """
     Suggest legitimate academic references to replace an invalid one.
-    Uses structured outputs so no manual JSON parsing is needed.
+    Uses structured output schema with fallback if parsing fails.
     """
-    if not GOOGLE_API_KEY:
-        logging.warning("No Google API key set, cannot search replacements.")
+
+    if not GENAI_AVAILABLE or not GOOGLE_API_KEY:
+        logging.warning("Google AI not available for replacement search")
         return []
 
     try:
@@ -599,8 +600,11 @@ def find_reference_replacements(invalid_ref: ReferenceExtraction, max_suggestion
         Author: {invalid_ref.author}
         Year: {invalid_ref.year}
 
-        Suggest {max_suggestions} real academic papers on a similar topic.
-        Return only JSON in the format required by ReferenceReplacement.
+        Task:
+        - Suggest up to {max_suggestions} real academic references on a similar topic.
+        - Prefer journal articles, conference papers, or books with reliable metadata.
+        - Always return at least one replacement (never return an empty list).
+        - Use the fields: title, author, year, doi, url, source, confidence, bib.
         """
 
         response = client.models.generate_content(
@@ -610,17 +614,37 @@ def find_reference_replacements(invalid_ref: ReferenceExtraction, max_suggestion
                 "tools": [google_search_tool],
                 "response_mime_type": "application/json",
                 "response_schema": list[ReferenceReplacement],
-                "temperature": 0.2,
+                "temperature": 0.3,  # allow some flexibility
             },
         )
 
         replacements: List[ReferenceReplacement] = response.parsed or []
+
+        # 🔄 Fallback: try manual parsing if schema fails
+        if not replacements:
+            import json
+            try:
+                raw = json.loads(response.text)
+                for item in raw.get("replacements", []):
+                    replacements.append(ReferenceReplacement(**item))
+            except Exception as e:
+                logging.warning(f"Fallback parsing failed: {e}")
+                return []
+
+        # Normalize
+        for r in replacements:
+            if not getattr(r, "confidence", None):
+                r.confidence = 0.5
+            if not getattr(r, "source", None) or not r.source.strip():
+                r.source = "AI Search"
+
         replacements.sort(key=lambda r: r.confidence, reverse=True)
         return replacements[:max_suggestions]
 
     except Exception as e:
-        logging.warning(f"Replacement suggestion failed: {e}")
+        logging.warning(f"AI replacement suggestion failed: {e}")
         return []
+
 
 
 def create_fallback_replacement(invalid_ref: ReferenceExtraction) -> List[ReferenceReplacement]:
