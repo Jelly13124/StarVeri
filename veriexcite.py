@@ -111,13 +111,15 @@ def split_references(bib_text):
     Follow these steps to clean and extract key information: 
     1. Normalisation: Fix spacing errors, line breaks, and punctuation.
     2. Extraction: For each reference, extract:
-    - Title (full title case)
-    - Author: First author's family name (If the author is an organization, use the organization name)
+    - title (full title case)
+    - author: First author's family name (If the author is an organization, use the organization name)
     - DOI (include if explicitly stated; otherwise leave blank)
     - URL (include if explicitly stated; otherwise leave blank)
-    - Year (4-digit publication year)
-    - Type (journal_article, preprint, conference_paper, book, book_chapter, OR non_academic_website. If the author is not a human but an organization, select non_academic_website)
-    - Bib: Normalised input bibliography (correct format, in one line)\n\n
+    - year (4-digit publication year)
+    - type (journal_article, preprint, conference_paper, book, book_chapter, OR non_academic_website. If the author is not a human but an organization, select non_academic_website)
+    - bib: Normalised input bibliography (correct format, in one line)
+    
+    Return the results as a JSON array with lowercase field names: title, author, DOI, URL, year, type, bib\n\n
     """
 
     genai.configure(api_key=GOOGLE_API_KEY)
@@ -134,7 +136,27 @@ def split_references(bib_text):
     import json
     try:
         references_data = json.loads(response.text)
-        references = [ReferenceExtraction(**ref) for ref in references_data]
+        
+        # Normalize field names to lowercase
+        normalized_refs = []
+        for ref in references_data:
+            normalized_ref = {}
+            for key, value in ref.items():
+                # Map common capitalized field names to lowercase
+                field_mapping = {
+                    'Title': 'title',
+                    'Author': 'author', 
+                    'DOI': 'DOI',
+                    'URL': 'URL',
+                    'Year': 'year',
+                    'Type': 'type',
+                    'Bib': 'bib'
+                }
+                normalized_key = field_mapping.get(key, key.lower())
+                normalized_ref[normalized_key] = value
+            normalized_refs.append(normalized_ref)
+        
+        references = [ReferenceExtraction(**ref) for ref in normalized_refs]
         return references
     except (json.JSONDecodeError, TypeError) as e:
         logging.error(f"Failed to parse references: {e}")
