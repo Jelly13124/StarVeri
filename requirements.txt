@@ -4,7 +4,7 @@ requests
 PyPDF2
 unidecode
 scholarly
-google-generativeai==0.8.5
+google-genai>=1.10.0
 beautifulsoup4
 rapidfuzz
 lxml

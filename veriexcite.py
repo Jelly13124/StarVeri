@@ -10,8 +10,8 @@ import logging
 from typing import List, Tuple
 from tenacity import retry, stop_after_attempt, wait_exponential
 try:
-    import google.generativeai as genai
-    from google.generativeai.types import Tool
+    import google.genai as genai
+    from google.genai.types import Tool
     GENAI_AVAILABLE = True
 except ImportError:
     genai = None
