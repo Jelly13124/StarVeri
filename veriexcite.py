@@ -447,7 +447,7 @@ def search_title_workshop_paper(ref: ReferenceExtraction) -> ReferenceCheckResul
         client = genai.Client(api_key=GOOGLE_API_KEY)
         google_search_tool = Tool(google_search=GoogleSearch())
         response = client.models.generate_content(
-            model="gemini-2.0-flash",
+            model="gemini-2.5-flash",
             contents=prompt,
             config={
                 "tools": [google_search_tool],
@@ -497,7 +497,7 @@ def search_title_google(ref: ReferenceExtraction) -> ReferenceCheckResult:
     client = genai.Client(api_key=GOOGLE_API_KEY)
     google_search_tool = Tool(google_search=GoogleSearch())
     response = client.models.generate_content(
-        model="gemini-2.0-flash",
+        model="gemini-2.5-flash",
         contents=prompt,
         config={
             "tools": [google_search_tool],
