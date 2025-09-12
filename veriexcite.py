@@ -416,28 +416,18 @@ def search_title_arxiv(ref: ReferenceExtraction) -> ReferenceCheckResult:
         logging.warning(f"arXiv search failed for title '{ref.title}': {e}")
         return ReferenceCheckResult(status=ReferenceStatus.NOT_FOUND, explanation=f"arXiv search failed: {e}")
 
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
 def search_title_workshop_paper(ref: ReferenceExtraction) -> ReferenceCheckResult:
-    """Search specifically for workshop papers using Gemini + Google Search tool."""
-
     try:
-        # Quick check if it even looks like a workshop paper
-        workshop_indicators = ["workshop", "symposium", "proc.", "proceedings"]
-        if not any(ind in ref.bib.lower() for ind in workshop_indicators):
-            return ReferenceCheckResult(
-                status=ReferenceStatus.NOT_FOUND,
-                explanation="Not a workshop paper."
-            )
+        if not any(w in ref.bib.lower() for w in ["workshop", "symposium", "proc.", "proceedings"]):
+            return ReferenceCheckResult(ReferenceStatus.NOT_FOUND, "Not a workshop paper.")
 
         if not GENAI_AVAILABLE or not GOOGLE_API_KEY:
-            return ReferenceCheckResult(
-                status=ReferenceStatus.NOT_FOUND,
-                explanation="Google AI not available for workshop paper search."
-            )
+            return ReferenceCheckResult(ReferenceStatus.NOT_FOUND, "Google AI not available for workshop search.")
 
         prompt = f"""
-        Verify if this exact workshop paper exists. Return "True" if a matching record
-        is found with the same title and author, otherwise return "False".
-        Only output "True" or "False".
+        Verify if this exact workshop paper exists. Return "True" if a site shows the same title and author; else "False".
+        Only output True or False.
 
         Title: {ref.title}
         Author: {ref.author}
@@ -446,49 +436,33 @@ def search_title_workshop_paper(ref: ReferenceExtraction) -> ReferenceCheckResul
 
         client = genai.Client(api_key=GOOGLE_API_KEY)
         google_search_tool = Tool(google_search=GoogleSearch())
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
+        resp = client.models.generate_content(
+            model="gemini-2.0-flash",
             contents=prompt,
-            config={
-                "tools": [google_search_tool],
-                "temperature": 0,
-            },
+            config={"tools": [google_search_tool], "temperature": 0},
         )
 
-        answer = response.candidates[0].content.parts[0].text.strip().lower()
-        if "true" in answer:
-            return ReferenceCheckResult(
-                status=ReferenceStatus.VALIDATED,
-                explanation="Workshop paper found via Google search."
-            )
-        else:
-            return ReferenceCheckResult(
-                status=ReferenceStatus.NOT_FOUND,
-                explanation="Workshop paper not found via Google search."
-            )
+        answer = resp.candidates[0].content.parts[0].text.strip().lower()
+        return (
+            ReferenceCheckResult(ReferenceStatus.VALIDATED, "Workshop paper found via Google search.")
+            if "true" in answer else
+            ReferenceCheckResult(ReferenceStatus.NOT_FOUND, "Workshop paper not found via Google search.")
+        )
 
     except Exception as e:
-        logging.warning(f"Workshop paper search failed for title '{ref.title}': {e}")
-        return ReferenceCheckResult(
-            status=ReferenceStatus.NOT_FOUND,
-            explanation=f"Workshop paper search failed: {e}"
-        )
+        logging.warning(f"Workshop paper search failed for '{ref.title}': {e}")
+        return ReferenceCheckResult(ReferenceStatus.NOT_FOUND, f"Workshop paper search failed: {e}")
+
 
 
 @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
 def search_title_google(ref: ReferenceExtraction) -> ReferenceCheckResult:
-    """Search for a reference title using Gemini + Google Search tool."""
-
     if not GENAI_AVAILABLE or not GOOGLE_API_KEY:
-        return ReferenceCheckResult(
-            status=ReferenceStatus.NOT_FOUND,
-            explanation="Google AI not available for search."
-        )
+        return ReferenceCheckResult(status=ReferenceStatus.NOT_FOUND, explanation="Google AI not available for search.")
 
     prompt = f"""
-    Please search for the following reference on Google.
-    Return "True" if you find a website with the exact title and author,
-    otherwise return "False". Only output "True" or "False".
+    Search for this reference. Return "True" if you find a page with the exact title and author; otherwise "False".
+    Only output True or False.
 
     Author: {ref.author}
     Title: {ref.title}
@@ -496,26 +470,19 @@ def search_title_google(ref: ReferenceExtraction) -> ReferenceCheckResult:
 
     client = genai.Client(api_key=GOOGLE_API_KEY)
     google_search_tool = Tool(google_search=GoogleSearch())
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
+    resp = client.models.generate_content(
+        model="gemini-2.0-flash",
         contents=prompt,
-        config={
-            "tools": [google_search_tool],
-            "temperature": 0,
-        },
+        config={"tools": [google_search_tool], "temperature": 0},
     )
 
-    answer = response.candidates[0].content.parts[0].text.strip().lower()
-    if "true" in answer:
-        return ReferenceCheckResult(
-            status=ReferenceStatus.VALIDATED,
-            explanation="Google search found matching reference."
-        )
-    else:
-        return ReferenceCheckResult(
-            status=ReferenceStatus.NOT_FOUND,
-            explanation="Google search did not find matching reference."
-        )
+    answer = resp.candidates[0].content.parts[0].text.strip().lower()
+    return (
+        ReferenceCheckResult(ReferenceStatus.VALIDATED, "Google search found matching reference.")
+        if "true" in answer else
+        ReferenceCheckResult(ReferenceStatus.NOT_FOUND, "Google search did not find matching reference.")
+    )
+
 
 def verify_url(ref: ReferenceExtraction) -> ReferenceCheckResult:
     """
@@ -579,74 +546,378 @@ def search_title(ref: ReferenceExtraction) -> ReferenceCheckResult:
                 return result
         return ReferenceCheckResult(status=ReferenceStatus.NOT_FOUND, explanation="No evidence found in any source.")
 
-def find_reference_replacements(invalid_ref: ReferenceExtraction, max_suggestions: int = 3) -> List[ReferenceReplacement]:
-    """
-    Suggest legitimate academic references to replace an invalid one.
-    Uses structured output schema with fallback if parsing fails.
-    """
 
-    if not GENAI_AVAILABLE or not GOOGLE_API_KEY:
-        logging.warning("Google AI not available for replacement search")
+
+
+def extract_topic_from_ref(invalid_ref: ReferenceExtraction) -> str:
+    """
+    Try to summarize the main topic from the invalid reference.
+    Uses Gemini when available; falls back to a simple keyword heuristic.
+    """
+    title = (invalid_ref.title or "").strip()
+    if GENAI_AVAILABLE and GOOGLE_API_KEY and title:
+        try:
+            client = genai.Client(api_key=GOOGLE_API_KEY)
+            topic_prompt = f"""
+            Summarize the research topic of this (possibly fake) reference in a short phrase (<=8 words):
+            {invalid_ref.bib or title}
+            """
+            resp = client.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=topic_prompt,
+                config={"temperature": 0},
+            )
+            topic = (resp.text or "").strip()
+            return topic if topic else title
+        except Exception:
+            pass
+
+    # Fallback: simple keyword extraction from title
+    # Keep alphanumerics, drop stopwords, take first ~6 tokens
+    words = re.findall(r"[A-Za-z0-9\-]+", title.lower())
+    stop = {"the", "and", "for", "with", "of", "in", "on", "to", "a", "an", "by", "from"}
+    keywords = [w for w in words if w not in stop]
+    return " ".join(keywords[:6]) if keywords else title
+
+
+def crossref_search_by_topic(topic: str, max_results: int = 3) -> List[ReferenceReplacement]:
+    """
+    Search Crossref for the topic; return ReferenceReplacement list.
+    """
+    results: List[ReferenceReplacement] = []
+    try:
+        params = {
+            "query.bibliographic": topic,
+            "rows": max_results * 3,   # overfetch, we’ll dedupe & trim later
+        }
+        r = requests.get("https://api.crossref.org/works", params=params, timeout=10)
+        if r.status_code != 200:
+            return results
+        items = r.json().get("message", {}).get("items", [])
+        for it in items:
+            title = (it.get("title", [""]) or [""])[0].strip()
+            if not title:
+                continue
+            authors = it.get("author", [])
+            family = ""
+            if authors:
+                family = (authors[0].get("family") or authors[0].get("name") or "").strip()
+            year = ""
+            try:
+                year = str(it.get("issued", {}).get("date-parts", [[None]])[0][0] or "")
+            except Exception:
+                year = ""
+            doi = (it.get("DOI") or "").strip()
+            url = (it.get("URL") or "").strip()
+            bib = f"{family} ({year}). {title}"
+            conf = 0.8 if doi else 0.6
+            results.append(
+                ReferenceReplacement(
+                    title=title,
+                    author=family,
+                    year=year,
+                    doi=doi,
+                    url=url,
+                    source="Crossref",
+                    confidence=conf,
+                    bib=bib
+                )
+            )
+            if len(results) >= max_results * 3:
+                break
+    except Exception:
+        pass
+    return results[: max_results * 3]
+
+
+def arxiv_search_by_topic(topic: str, max_results: int = 3) -> List[ReferenceReplacement]:
+    """
+    Search arXiv by topic; return ReferenceReplacement list.
+    """
+    results: List[ReferenceReplacement] = []
+    try:
+        q = f'all:"{topic}"'
+        params = {"search_query": q, "max_results": max_results * 2}
+        r = requests.get("http://export.arxiv.org/api/query", params=params, timeout=10)
+        if r.status_code != 200:
+            return results
+        soup = BeautifulSoup(r.content, "lxml-xml")
+        for entry in soup.find_all("entry"):
+            title_tag = entry.find("title")
+            if not title_tag:
+                continue
+            title = title_tag.text.strip()
+            year = ""
+            pub = entry.find("published")
+            if pub and pub.text:
+                year = pub.text.strip()[:4]
+            author_family = ""
+            a0 = entry.find("author")
+            if a0:
+                nm = a0.find("name")
+                if nm and nm.text:
+                    author_family = nm.text.strip().split()[-1]
+            url = ""
+            id_tag = entry.find("id")
+            if id_tag and id_tag.text:
+                url = id_tag.text.strip()
+            doi = ""
+            doi_tag = entry.find("arxiv:doi")
+            if doi_tag and doi_tag.text:
+                doi = doi_tag.text.strip()
+            bib = f"{author_family} ({year}). {title}"
+            results.append(
+                ReferenceReplacement(
+                    title=title,
+                    author=author_family,
+                    year=year,
+                    doi=doi,
+                    url=url,
+                    source="arXiv",
+                    confidence=0.6,
+                    bib=bib
+                )
+            )
+            if len(results) >= max_results * 2:
+                break
+    except Exception:
+        pass
+    return results[: max_results * 2]
+
+
+def scholarly_search_by_topic(topic: str, max_results: int = 3) -> List[ReferenceReplacement]:
+    """
+    Reuse your existing Google Scholar fallback by creating a faux ReferenceExtraction
+    whose 'title' is the topic phrase.
+    """
+    fake = ReferenceExtraction(
+        title=topic,
+        author="",
+        DOI="",
+        URL="",
+        year=2020,
+        type="conference_paper",
+        bib=topic,
+    )
+    try:
+        return search_similar_papers_scholarly(fake, max_results)
+    except Exception:
         return []
 
+
+def gemini_topic_replacements(topic: str, max_results: int = 3) -> List[ReferenceReplacement]:
+    """
+    Ask Gemini + GoogleSearch for replacements given a topic.
+    Relies on response_schema=list[ReferenceReplacement] so we don't hand-parse JSON.
+    """
+    results: List[ReferenceReplacement] = []
+    if not (GENAI_AVAILABLE and GOOGLE_API_KEY):
+        return results
     try:
         client = genai.Client(api_key=GOOGLE_API_KEY)
         google_search_tool = Tool(google_search=GoogleSearch())
-
         prompt = f"""
-        The following reference could not be validated:
-
-        Title: {invalid_ref.title}
-        Author: {invalid_ref.author}
-        Year: {invalid_ref.year}
-
-        Task:
-        1. Infer the main research topic or field from the above reference.
-        2. Suggest up to {max_suggestions} *real academic works* related to this topic.
-           - They do not need to match the invalid title exactly.
-           - Prefer widely recognized or peer-reviewed sources.
-        3. For each reference, provide:
-           title, author, year, doi (if available), url (if available), source, confidence (0–1), and bib.
-        4. Never return an empty list.
+        Suggest up to {max_results} real academic works about: "{topic}".
+        Output strictly as JSON matching this schema: title, author, year, doi, url, source, confidence, bib.
+        If metadata is missing, use an empty string for the field. Never return an empty list.
         """
-
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
+        resp = client.models.generate_content(
+            model="gemini-2.0-flash",
             contents=prompt,
             config={
                 "tools": [google_search_tool],
                 "response_mime_type": "application/json",
                 "response_schema": list[ReferenceReplacement],
-                "temperature": 0.6,  # allow some flexibility
+                "temperature": 0.6,
             },
         )
-
-        replacements: List[ReferenceReplacement] = response.parsed or []
-
-        # 🔄 Fallback: try manual parsing if schema fails
-        if not replacements:
-            import json
-            try:
-                raw = json.loads(response.text)
-                for item in raw.get("replacements", []):
-                    replacements.append(ReferenceReplacement(**item))
-            except Exception as e:
-                logging.warning(f"Fallback parsing failed: {e}")
-                return []
-
-        # Normalize
-        for r in replacements:
-            if not getattr(r, "confidence", None):
-                r.confidence = 0.5
-            if not getattr(r, "source", None) or not r.source.strip():
-                r.source = "AI Search"
-
-        replacements.sort(key=lambda r: r.confidence, reverse=True)
-        return replacements[:max_suggestions]
-
-    except Exception as e:
-        logging.warning(f"AI replacement suggestion failed: {e}")
+        results = resp.parsed or []
+    except Exception:
         return []
+    return results
+
+
+def _merge_unique_by_title(candidates: List[ReferenceReplacement], limit: int) -> List[ReferenceReplacement]:
+    """
+    Deduplicate by normalized title; keep highest-confidence version.
+    """
+    best: dict[str, ReferenceReplacement] = {}
+    for c in candidates:
+        key = normalize_title(c.title or "")
+        if not key:
+            continue
+        if key not in best or (c.confidence or 0) > (best[key].confidence or 0):
+            best[key] = c
+    uniq = list(best.values())
+    uniq.sort(key=lambda x: x.confidence, reverse=True)
+    return uniq[:limit]
+
+
+def find_reference_replacements(invalid_ref: ReferenceExtraction, max_suggestions: int = 3) -> List[ReferenceReplacement]:
+    """
+    Optimal pipeline for replacement suggestions:
+      0) Detect topic from the invalid reference
+      1) Title-nearby (Google Scholar by the *invalid title*)
+      2) Crossref by topic (DOI-rich, trustworthy)
+      3) arXiv by topic (great recall for ML/CS/physics)
+      4) Scholar by topic (broad recall)
+      5) Gemini + GoogleSearch as last resort (strict JSON)
+
+    Then:
+      - Deduplicate (prefer DOI; else normalized title)
+      - Score candidates and boost grounded sources/DOIs/near-title matches
+      - Return top-N with updated confidence
+    """
+
+    # ---------------------------
+    # Scoring helpers (local)
+    # ---------------------------
+    def _year_num(y: str | int) -> int | None:
+        try:
+            return int(str(y)[:4])
+        except Exception:
+            return None
+
+    def _title_sim(a: str, b: str) -> float:
+        # 0..1 fuzzy similarity between titles
+        return fuzz.ratio(normalize_title(a), normalize_title(b)) / 100.0 if a and b else 0.0
+
+    def _topic_overlap(topic: str, title: str) -> float:
+        # fraction of topic tokens present in title (very simple)
+        toks = [t for t in re.findall(r"[A-Za-z0-9\-]+", topic.lower()) if len(t) > 2]
+        if not toks:
+            return 0.0
+        title_norm = normalize_title(title)
+        hits = sum(1 for t in toks if t in title_norm)
+        return hits / max(1, len(toks))
+
+    def _source_weight(src: str) -> float:
+        src = (src or "").lower()
+        if "crossref" in src: return 1.0
+        if "arxiv" in src: return 0.85
+        if "scholar" in src: return 0.75
+        if "publisher" in src: return 0.9
+        if "ai search" in src: return 0.55
+        return 0.6
+
+    def _has_doi(doi: str) -> float:
+        return 1.0 if (doi or "").strip() else 0.0
+
+    def _year_proximity(inv_year: int | None, cand_year: str) -> float:
+        if inv_year is None:
+            return 0.0
+        cy = _year_num(cand_year)
+        if cy is None:
+            return 0.0
+        diff = abs(inv_year - cy)
+        if diff <= 2: return 1.0
+        if diff <= 5: return 0.6
+        if diff <= 10: return 0.3
+        return 0.0
+
+    def _score(c: ReferenceReplacement, topic: str, invalid: ReferenceExtraction) -> float:
+        # Weighted blend; adjust weights as needed
+        sim = _title_sim(invalid.title, c.title)
+        ovl = _topic_overlap(topic, c.title)
+        yr = _year_proximity(invalid.year if isinstance(invalid.year, int) else _year_num(str(invalid.year)), c.year)
+        doi_w = _has_doi(c.doi)
+        src_w = _source_weight(c.source)
+
+        # Final score in 0..1
+        score = (0.40 * sim) + (0.20 * ovl) + (0.20 * doi_w) + (0.10 * src_w) + (0.10 * yr)
+        # Never *lower* an existing model-provided confidence; keep the max
+        return max(c.confidence or 0.0, round(min(1.0, score), 3))
+
+    # ---------------------------
+    # 0) Detect topic
+    # ---------------------------
+    try:
+        topic = extract_topic_from_ref(invalid_ref)
+    except Exception:
+        topic = invalid_ref.title or ""
+
+    # ---------------------------
+    # 1..5) Gather candidates
+    # ---------------------------
+    candidates: List[ReferenceReplacement] = []
+
+    # 1) Near-title (helps when fake ref is “close” to a real one)
+    try:
+        candidates += search_similar_papers_scholarly(invalid_ref, max_results=max_suggestions * 2)
+    except Exception as e:
+        logging.warning(f"Title-nearby (Scholar) failed: {e}")
+
+    # 2) Crossref by topic
+    try:
+        candidates += crossref_search_by_topic(topic, max_results=max_suggestions * 2)
+    except Exception as e:
+        logging.warning(f"Crossref-by-topic failed: {e}")
+
+    # 3) arXiv by topic
+    try:
+        candidates += arxiv_search_by_topic(topic, max_results=max_suggestions * 2)
+    except Exception as e:
+        logging.warning(f"arXiv-by-topic failed: {e}")
+
+    # 4) Scholar by topic
+    try:
+        candidates += scholarly_search_by_topic(topic, max_results=max_suggestions * 2)
+    except Exception as e:
+        logging.warning(f"Scholar-by-topic failed: {e}")
+
+    # 5) Gemini last
+    try:
+        candidates += gemini_topic_replacements(topic, max_results=max_suggestions * 2)
+    except Exception as e:
+        logging.warning(f"Gemini-topic replacements failed: {e}")
+
+    # If everything failed, return empty (no fake “fallbacks”)
+    if not candidates:
+        return []
+
+    # ---------------------------
+    # Deduplicate (prefer DOI)
+    # ---------------------------
+    by_doi: dict[str, ReferenceReplacement] = {}
+    for c in candidates:
+        if c.doi:
+            key = c.doi.strip().lower()
+            prev = by_doi.get(key)
+            if not prev or (c.confidence or 0) > (prev.confidence or 0):
+                by_doi[key] = c
+
+    # Collect non-DOI candidates and de-dup by normalized title
+    rest: List[ReferenceReplacement] = [c for c in candidates if not (c.doi or "").strip()]
+    by_title: dict[str, ReferenceReplacement] = {}
+    for c in rest:
+        key = normalize_title(c.title or "")
+        if not key:
+            continue
+        prev = by_title.get(key)
+        if not prev or (c.confidence or 0) > (prev.confidence or 0):
+            by_title[key] = c
+
+    deduped = list(by_doi.values()) + list(by_title.values())
+
+    # ---------------------------
+    # Score + normalize + sort
+    # ---------------------------
+    for c in deduped:
+        # Normalize missing fields
+        c.author = c.author or ""
+        c.year = c.year or ""
+        c.doi = c.doi or ""
+        c.url = c.url or ""
+        c.source = c.source or "AI Search"
+        c.bib = c.bib or f"{c.author} ({c.year}). {c.title}"
+
+        # Update confidence using scoring
+        c.confidence = _score(c, topic, invalid_ref)
+
+    deduped.sort(key=lambda x: x.confidence, reverse=True)
+
+    return deduped[:max_suggestions]
+
 
 
 
