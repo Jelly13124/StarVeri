@@ -91,6 +91,7 @@ class ReferenceStatus(Enum):
 class ReferenceCheckResult(BaseModel):
     status: ReferenceStatus
     explanation: str
+    suggestion: str = None
 
 def split_references(bib_text):
     """Splits the bibliography text into individual references using the Google Gemini API."""
@@ -113,16 +114,14 @@ def split_references(bib_text):
     response = client.models.generate_content(
         model='gemini-2.5-flash',
         contents=prompt + bib_text,
-        config={
+        generation_config={
             'response_mime_type': 'application/json',
-            'response_schema': list[ReferenceExtraction],
-            'temperature': 0,
-            'thinking_config': ThinkingConfig(thinking_budget=0),
         },
+        tools=[Tool.from_google_search_retrieval(GoogleSearch())]
     )
 
     # print(response.text)  # JSON string.
-    references: list[ReferenceExtraction] = response.parsed  # Parsed JSON.
+    references: list[ReferenceExtraction] = response.candidates[0].content.parts[0].text  # Parsed JSON.
     return references
 
 
@@ -291,12 +290,9 @@ def search_title_workshop_paper(ref: ReferenceExtraction) -> ReferenceCheckResul
         client = genai.Client(api_key=GOOGLE_API_KEY)
         google_search_tool = Tool(google_search=GoogleSearch())
         response = client.models.generate_content(
-            model='gemini-2.0-flash',
+            model='gemini-2.5-flash',
             contents=prompt,
-            config={
-                'tools': [google_search_tool],
-                'temperature': 0,
-            },
+            tools=[google_search_tool]
         )
 
         answer = normalize_title(response.candidates[0].content.parts[0].text)
@@ -356,11 +352,9 @@ def search_title_google(ref: ReferenceExtraction) -> ReferenceCheckResult:
     client = genai.Client(api_key=GOOGLE_API_KEY)
     google_search_tool = Tool(google_search=GoogleSearch())
     response = client.models.generate_content(
-        model='gemini-2.0-flash',
+        model='gemini-2.5-flash',
         contents=prompt,
-        config={
-            'tools': [google_search_tool],
-        },
+        tools=[google_search_tool]
     )
 
     answer = normalize_title(response.candidates[0].content.parts[0].text)
@@ -368,6 +362,26 @@ def search_title_google(ref: ReferenceExtraction) -> ReferenceCheckResult:
         return ReferenceCheckResult(status=ReferenceStatus.VALIDATED, explanation="Google search found matching reference.")
     else:
         return ReferenceCheckResult(status=ReferenceStatus.NOT_FOUND, explanation="Google search did not find matching reference.")
+
+def suggest_replacement(ref: ReferenceExtraction) -> str:
+    """Suggests a valid replacement for an invalid reference."""
+    prompt = f"""
+    The following reference was found to be invalid or not found:
+    {ref.bib}
+
+    Please search for a valid reference with a similar title and author.
+    Provide the most likely correct reference in a standard bibliographic format.
+    If no likely replacement can be found, return an empty string.
+    """
+    client = genai.Client(api_key=GOOGLE_API_KEY)
+    google_search_tool = Tool(google_search=GoogleSearch())
+    response = client.models.generate_content(
+        model='gemini-2.5-flash',
+        contents=prompt,
+        tools=[google_search_tool]
+    )
+    return response.candidates[0].content.parts[0].text.strip()
+
 
 def search_title(ref: ReferenceExtraction) -> ReferenceCheckResult:
     """Searches for a title using multiple methods."""
@@ -377,6 +391,7 @@ def search_title(ref: ReferenceExtraction) -> ReferenceCheckResult:
         # First try Crossref
         crossref_result = search_title_crossref(ref)
         if crossref_result.status == ReferenceStatus.INVALID:
+            crossref_result.suggestion = suggest_replacement(ref)
             return crossref_result
         if crossref_result.status == ReferenceStatus.VALIDATED:
             return crossref_result
@@ -395,8 +410,12 @@ def search_title(ref: ReferenceExtraction) -> ReferenceCheckResult:
         # If all fail, return the most informative NOT_FOUND
         for result in [crossref_result, arxiv_result, workshop_result, scholar_result]:
             if result.status == ReferenceStatus.NOT_FOUND:
+                result.suggestion = suggest_replacement(ref)
                 return result
-        return ReferenceCheckResult(status=ReferenceStatus.NOT_FOUND, explanation="No evidence found in any source.")
+        final_result = ReferenceCheckResult(status=ReferenceStatus.NOT_FOUND, explanation="No evidence found in any source.")
+        final_result.suggestion = suggest_replacement(ref)
+        return final_result
+
 
 # --- Main Workflow ---
 
@@ -424,7 +443,11 @@ def veriexcite(pdf_path: str) -> Tuple[int, int, List[str], List[str]]:
 
     for idx, ref in enumerate(references):
         result = search_title(ref)
-        list_explanations.append(f"Reference: {ref.bib}\nStatus: {result.status.value}\nExplanation: {result.explanation}\n")
+        explanation = f"Reference: {ref.bib}\nStatus: {result.status.value}\nExplanation: {result.explanation}"
+        if result.suggestion:
+            explanation += f"\nSuggestion: {result.suggestion}"
+        explanation += "\n"
+        list_explanations.append(explanation)
         if result.status == ReferenceStatus.VALIDATED:
             count_verified += 1
         else:

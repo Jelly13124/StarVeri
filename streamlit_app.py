@@ -64,7 +64,8 @@ def process_and_verify(bib_text: str, keywords=["参考文献", "References", "B
             "链接": ref.URL,
             "原始文本": ref.bib,
             "状态": "待验证",
-            "说明": "待验证"
+            "说明": "待验证",
+            "建议": ""
         })
 
     df = pd.DataFrame(results)
@@ -87,9 +88,10 @@ def process_and_verify(bib_text: str, keywords=["参考文献", "References", "B
         ),
         "状态": st.column_config.TextColumn(help="参考文献校验状态"),
         "说明": st.column_config.TextColumn(help="结果说明"),
+        "建议": st.column_config.TextColumn(help="建议替换的参考文献"),
     }
 
-    df_display = df[['第一作者', '年份', '标题', '类型', '链接', '原始文本', '状态', '说明']]
+    df_display = df[['第一作者', '年份', '标题', '类型', '链接', '原始文本', '状态', '说明', '建议']]
     placeholder.dataframe(df_display, use_container_width=True, column_config=column_config)
 
     verified_count = 0
@@ -100,11 +102,13 @@ def process_and_verify(bib_text: str, keywords=["参考文献", "References", "B
         result = search_title(references[index])
         df.loc[index, "状态"] = status_emoji.get(result.status.value, result.status.value)
         df.loc[index, "说明"] = result.explanation
+        if result.suggestion:
+            df.loc[index, "建议"] = result.suggestion
         if result.status == ReferenceStatus.VALIDATED:
             verified_count += 1
         else:
             warning_count += 1
-        df_display = df[['第一作者', '年份', '标题', '类型', '链接', '原始文本', '状态', '说明']]
+        df_display = df[['第一作者', '年份', '标题', '类型', '链接', '原始文本', '状态', '说明', '建议']]
         placeholder.dataframe(df_display, use_container_width=True, column_config=column_config)
         progress_text.text(f"已验证：{verified_count} | 异常/未找到：{warning_count}")
 
