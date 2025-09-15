@@ -1,0 +1,14 @@
+streamlit
+google-generativeai
+pymupdf
+pydantic
+pandas
+requests
+tenacity
+# The following libraries were part of the older logic but may still be in use
+pypdf2
+scholarly
+unidecode
+rapidfuzz
+beautifulsoup4
+lxml
