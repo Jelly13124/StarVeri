@@ -113,10 +113,15 @@ def split_references(bib_text):
     client = genai.Client(api_key=GOOGLE_API_KEY)
     response = client.models.generate_content(
         model='gemini-2.5-flash',
-        contents=[prompt + bib_text],
-        generation_config={'response_mime_type': 'application/json'},
+        contents=prompt + bib_text,
+        config={
+            'response_mime_type': 'application/json',
+            'response_schema': list[ReferenceExtraction],
+            'temperature': 0,
+        },
     )
-    references = [ReferenceExtraction.parse_raw(part.text) for part in response.candidates[0].content.parts]
+
+    references: list[ReferenceExtraction] = response.candidates[0].content.parts[0].text
     return references
 
 
@@ -288,7 +293,7 @@ def search_title_workshop_paper(ref: ReferenceExtraction) -> ReferenceCheckResul
             model='gemini-2.5-flash',
             contents=prompt,
             tools=[google_search_tool],
-            generation_config={
+            config={
                 'temperature': 0,
             },
         )
