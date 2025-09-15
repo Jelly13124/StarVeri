@@ -10,7 +10,7 @@ import logging
 from typing import List, Tuple
 from tenacity import retry, stop_after_attempt, wait_exponential
 from google import genai
-from google.genai.types import Tool, GoogleSearch
+from google.genai.types import Tool, GoogleSearch, ThinkingConfig
 from bs4 import BeautifulSoup
 from rapidfuzz import fuzz
 from enum import Enum
@@ -91,7 +91,6 @@ class ReferenceStatus(Enum):
 class ReferenceCheckResult(BaseModel):
     status: ReferenceStatus
     explanation: str
-    suggestion: str = None
 
 def split_references(bib_text):
     """Splits the bibliography text into individual references using the Google Gemini API."""
@@ -118,10 +117,12 @@ def split_references(bib_text):
             'response_mime_type': 'application/json',
             'response_schema': list[ReferenceExtraction],
             'temperature': 0,
+            'thinking_config': ThinkingConfig(thinking_budget=0),
         },
     )
 
-    references: list[ReferenceExtraction] = response.candidates[0].content.parts[0].text
+    # print(response.text)  # JSON string.
+    references: list[ReferenceExtraction] = response.parsed  # Parsed JSON.
     return references
 
 
@@ -290,10 +291,10 @@ def search_title_workshop_paper(ref: ReferenceExtraction) -> ReferenceCheckResul
         client = genai.Client(api_key=GOOGLE_API_KEY)
         google_search_tool = Tool(google_search=GoogleSearch())
         response = client.models.generate_content(
-            model='gemini-2.5-flash',
+            model='gemini-2.0-flash',
             contents=prompt,
-            tools=[google_search_tool],
             config={
+                'tools': [google_search_tool],
                 'temperature': 0,
             },
         )
@@ -355,9 +356,11 @@ def search_title_google(ref: ReferenceExtraction) -> ReferenceCheckResult:
     client = genai.Client(api_key=GOOGLE_API_KEY)
     google_search_tool = Tool(google_search=GoogleSearch())
     response = client.models.generate_content(
-        model='gemini-2.5-flash',
+        model='gemini-2.0-flash',
         contents=prompt,
-        tools=[google_search_tool],
+        config={
+            'tools': [google_search_tool],
+        },
     )
 
     answer = normalize_title(response.candidates[0].content.parts[0].text)
@@ -366,38 +369,14 @@ def search_title_google(ref: ReferenceExtraction) -> ReferenceCheckResult:
     else:
         return ReferenceCheckResult(status=ReferenceStatus.NOT_FOUND, explanation="Google search did not find matching reference.")
 
-def find_replacement(ref: ReferenceExtraction) -> str:
-    """Suggests a valid replacement for an invalid reference."""
-    prompt = f"""
-    The following reference was found to be invalid or not found:
-    {ref.bib}
-
-    Please search for a valid reference with a similar title and author.
-    Provide the most likely correct reference in a standard bibliographic format.
-    If no likely replacement can be found, return an empty string.
-    """
-    client = genai.Client(api_key=GOOGLE_API_KEY)
-    google_search_tool = Tool(google_search=GoogleSearch())
-    response = client.models.generate_content(
-        model='gemini-2.5-flash',
-        contents=prompt,
-        tools=[google_search_tool]
-    )
-    return response.candidates[0].content.parts[0].text.strip()
-
-
 def search_title(ref: ReferenceExtraction) -> ReferenceCheckResult:
     """Searches for a title using multiple methods."""
     if ref.type == "non_academic_website":
-        result = verify_url(ref)
-        if result.status != ReferenceStatus.VALIDATED:
-            result.suggestion = find_replacement(ref)
-        return result
+        return verify_url(ref)
     else:
         # First try Crossref
         crossref_result = search_title_crossref(ref)
         if crossref_result.status == ReferenceStatus.INVALID:
-            crossref_result.suggestion = find_replacement(ref)
             return crossref_result
         if crossref_result.status == ReferenceStatus.VALIDATED:
             return crossref_result
@@ -416,21 +395,18 @@ def search_title(ref: ReferenceExtraction) -> ReferenceCheckResult:
         # If all fail, return the most informative NOT_FOUND
         for result in [crossref_result, arxiv_result, workshop_result, scholar_result]:
             if result.status == ReferenceStatus.NOT_FOUND:
-                result.suggestion = find_replacement(ref)
                 return result
-        final_result = ReferenceCheckResult(status=ReferenceStatus.NOT_FOUND, explanation="No evidence found in any source.")
-        final_result.suggestion = find_replacement(ref)
-        return final_result
+        return ReferenceCheckResult(status=ReferenceStatus.NOT_FOUND, explanation="No evidence found in any source.")
 
 # --- Main Workflow ---
 
-def veriexcite(pdf_path: str) -> Tuple[int, int, List[str], List[dict]]:
+def veriexcite(pdf_path: str) -> Tuple[int, int, List[str], List[str]]:
     """
     Check references in a PDF. Returns:
     - count_verified: number of validated references
     - count_warning: number of warnings (invalid or not found)
     - list_warning: list of bib entries with warnings
-    - list_details: list of dictionaries with detailed results for each reference
+    - list_explanations: list of explanations for each reference
     """
     # 1. Extract text from PDF and find bibliography
     full_text = extract_text_from_pdf(pdf_path)
@@ -444,40 +420,30 @@ def veriexcite(pdf_path: str) -> Tuple[int, int, List[str], List[dict]]:
     # 3. Verify each reference
     count_verified, count_warning = 0, 0
     list_warning = []
-    list_details = []
+    list_explanations = []
 
     for idx, ref in enumerate(references):
         result = search_title(ref)
-        details = {
-            "bib": ref.bib,
-            "status": result.status.value,
-            "explanation": result.explanation,
-            "suggestion": result.suggestion
-        }
-        list_details.append(details)
+        list_explanations.append(f"Reference: {ref.bib}\nStatus: {result.status.value}\nExplanation: {result.explanation}\n")
         if result.status == ReferenceStatus.VALIDATED:
             count_verified += 1
         else:
             count_warning += 1
             list_warning.append(ref.bib)
-    return count_verified, count_warning, list_warning, list_details
+    return count_verified, count_warning, list_warning, list_explanations
 
 def process_pdf_file(pdf_path: str) -> None:
     """Check a single PDF file."""
-    count_verified, count_warning, list_warning, list_details = veriexcite(pdf_path)
+    count_verified, count_warning, list_warning, list_explanations = veriexcite(pdf_path)
     print(f"{count_verified} references verified, {count_warning} warnings.")
     if count_warning > 0:
         print("\nWarning List:\n")
         for item in list_warning:
             print(item)
-    print("\nDetails:\n")
-    for detail in list_details:
-        print(f"Reference: {detail['bib']}")
-        print(f"Status: {detail['status']}")
-        print(f"Explanation: {detail['explanation']}")
-        if detail['suggestion']:
-            print(f"Suggestion: {detail['suggestion']}")
-        print("\n")
+    print("\nExplanation:\n")
+    for explanation in list_explanations:
+        print(explanation)
+    return count_verified, count_warning, list_warning, list_explanations
 
 def process_folder(folder_path: str) -> None:
     """Check all PDF files in a folder."""
@@ -489,10 +455,10 @@ def process_folder(folder_path: str) -> None:
     for pdf_file in pdf_files:
         pdf_path = os.path.join(folder_path, pdf_file)
         print(f"Checking file: {pdf_file}")
-        count_verified, count_warning, list_warning, list_details = veriexcite(pdf_path)
+        count_verified, count_warning, list_warning, list_explanations = process_pdf_file(pdf_path)
         print("--------------------------------------------------")
         results.append({"File": pdf_file, "Found References": count_verified + count_warning, "Verified": count_verified,
-                        "Warnings": count_warning, "Warning List": list_warning, "Details": list_details})
+                        "Warnings": count_warning, "Warning List": list_warning, "Explanation": list_explanations})
         pd.DataFrame(results).to_csv('VeriExCite results.csv', index=False)
     print("Results saved to VeriExCite results.csv")
 
