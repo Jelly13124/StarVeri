@@ -116,12 +116,11 @@ def split_references(bib_text):
         contents=prompt + bib_text,
         generation_config={
             'response_mime_type': 'application/json',
+            'response_schema': list[ReferenceExtraction],
         },
-        tools=[Tool.from_google_search_retrieval(GoogleSearch())]
     )
 
-    # print(response.text)  # JSON string.
-    references: list[ReferenceExtraction] = response.candidates[0].content.parts[0].text  # Parsed JSON.
+    references: list[ReferenceExtraction] = response.candidates[0].content.parts[0].text
     return references
 
 
@@ -363,7 +362,7 @@ def search_title_google(ref: ReferenceExtraction) -> ReferenceCheckResult:
     else:
         return ReferenceCheckResult(status=ReferenceStatus.NOT_FOUND, explanation="Google search did not find matching reference.")
 
-def suggest_replacement(ref: ReferenceExtraction) -> str:
+def find_replacement(ref: ReferenceExtraction) -> str:
     """Suggests a valid replacement for an invalid reference."""
     prompt = f"""
     The following reference was found to be invalid or not found:
@@ -386,12 +385,15 @@ def suggest_replacement(ref: ReferenceExtraction) -> str:
 def search_title(ref: ReferenceExtraction) -> ReferenceCheckResult:
     """Searches for a title using multiple methods."""
     if ref.type == "non_academic_website":
-        return verify_url(ref)
+        result = verify_url(ref)
+        if result.status != ReferenceStatus.VALIDATED:
+            result.suggestion = find_replacement(ref)
+        return result
     else:
         # First try Crossref
         crossref_result = search_title_crossref(ref)
         if crossref_result.status == ReferenceStatus.INVALID:
-            crossref_result.suggestion = suggest_replacement(ref)
+            crossref_result.suggestion = find_replacement(ref)
             return crossref_result
         if crossref_result.status == ReferenceStatus.VALIDATED:
             return crossref_result
@@ -410,22 +412,21 @@ def search_title(ref: ReferenceExtraction) -> ReferenceCheckResult:
         # If all fail, return the most informative NOT_FOUND
         for result in [crossref_result, arxiv_result, workshop_result, scholar_result]:
             if result.status == ReferenceStatus.NOT_FOUND:
-                result.suggestion = suggest_replacement(ref)
+                result.suggestion = find_replacement(ref)
                 return result
         final_result = ReferenceCheckResult(status=ReferenceStatus.NOT_FOUND, explanation="No evidence found in any source.")
-        final_result.suggestion = suggest_replacement(ref)
+        final_result.suggestion = find_replacement(ref)
         return final_result
-
 
 # --- Main Workflow ---
 
-def veriexcite(pdf_path: str) -> Tuple[int, int, List[str], List[str]]:
+def veriexcite(pdf_path: str) -> Tuple[int, int, List[str], List[dict]]:
     """
     Check references in a PDF. Returns:
     - count_verified: number of validated references
     - count_warning: number of warnings (invalid or not found)
     - list_warning: list of bib entries with warnings
-    - list_explanations: list of explanations for each reference
+    - list_details: list of dictionaries with detailed results for each reference
     """
     # 1. Extract text from PDF and find bibliography
     full_text = extract_text_from_pdf(pdf_path)
@@ -439,21 +440,23 @@ def veriexcite(pdf_path: str) -> Tuple[int, int, List[str], List[str]]:
     # 3. Verify each reference
     count_verified, count_warning = 0, 0
     list_warning = []
-    list_explanations = []
+    list_details = []
 
     for idx, ref in enumerate(references):
         result = search_title(ref)
-        explanation = f"Reference: {ref.bib}\nStatus: {result.status.value}\nExplanation: {result.explanation}"
-        if result.suggestion:
-            explanation += f"\nSuggestion: {result.suggestion}"
-        explanation += "\n"
-        list_explanations.append(explanation)
+        details = {
+            "bib": ref.bib,
+            "status": result.status.value,
+            "explanation": result.explanation,
+            "suggestion": result.suggestion
+        }
+        list_details.append(details)
         if result.status == ReferenceStatus.VALIDATED:
             count_verified += 1
         else:
             count_warning += 1
             list_warning.append(ref.bib)
-    return count_verified, count_warning, list_warning, list_explanations
+    return count_verified, count_warning, list_warning, list_details
 
 def process_pdf_file(pdf_path: str) -> None:
     """Check a single PDF file."""
@@ -478,10 +481,10 @@ def process_folder(folder_path: str) -> None:
     for pdf_file in pdf_files:
         pdf_path = os.path.join(folder_path, pdf_file)
         print(f"Checking file: {pdf_file}")
-        count_verified, count_warning, list_warning, list_explanations = process_pdf_file(pdf_path)
+        count_verified, count_warning, list_warning, list_details = veriexcite(pdf_path)
         print("--------------------------------------------------")
         results.append({"File": pdf_file, "Found References": count_verified + count_warning, "Verified": count_verified,
-                        "Warnings": count_warning, "Warning List": list_warning, "Explanation": list_explanations})
+                        "Warnings": count_warning, "Warning List": list_warning, "Details": list_details})
         pd.DataFrame(results).to_csv('VeriExCite results.csv', index=False)
     print("Results saved to VeriExCite results.csv")
 
