@@ -111,7 +111,7 @@ def split_references(bib_text):
 
     client = genai.Client(api_key=GOOGLE_API_KEY)
     response = client.models.generate_content(
-        model='gemini-2.5-flash',
+        model='gemini-1.5-flash',
         contents=prompt + bib_text,
         config={
             'response_mime_type': 'application/json',
@@ -226,7 +226,7 @@ def search_title_arxiv(ref: ReferenceExtraction) -> ReferenceCheckResult:
                 if response.status_code == 200:
                     soup = BeautifulSoup(response.content, 'lxml-xml')
                     entries = soup.find_all('entry')
-                
+            
             if not entries:
                 return ReferenceCheckResult(status=ReferenceStatus.NOT_FOUND, explanation="No matching record found in arXiv.")
                 
@@ -291,7 +291,7 @@ def search_title_workshop_paper(ref: ReferenceExtraction) -> ReferenceCheckResul
         client = genai.Client(api_key=GOOGLE_API_KEY)
         google_search_tool = Tool(google_search=GoogleSearch())
         response = client.models.generate_content(
-            model='gemini-2.0-flash',
+            model='gemini-1.5-flash',
             contents=prompt,
             config={
                 'tools': [google_search_tool],
@@ -356,7 +356,7 @@ def search_title_google(ref: ReferenceExtraction) -> ReferenceCheckResult:
     client = genai.Client(api_key=GOOGLE_API_KEY)
     google_search_tool = Tool(google_search=GoogleSearch())
     response = client.models.generate_content(
-        model='gemini-2.0-flash',
+        model='gemini-1.5-flash',
         contents=prompt,
         config={
             'tools': [google_search_tool],
@@ -368,6 +368,39 @@ def search_title_google(ref: ReferenceExtraction) -> ReferenceCheckResult:
         return ReferenceCheckResult(status=ReferenceStatus.VALIDATED, explanation="Google search found matching reference.")
     else:
         return ReferenceCheckResult(status=ReferenceStatus.NOT_FOUND, explanation="Google search did not find matching reference.")
+
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=4, max=10))
+def find_replacement_reference(ref: ReferenceExtraction) -> str:
+    """Finds a plausible replacement for an invalid reference using the Gemini API."""
+    try:
+        prompt = f"""
+        The following academic reference was found to be invalid or non-existent:
+        Title: "{ref.title}"
+        Author: {ref.author}
+        Year: {ref.year}
+
+        Please find a single, real, verifiable academic reference (like a journal article, conference paper, or book) that is a plausible replacement. The replacement should be on a very similar topic.
+
+        Provide only the full, correctly formatted bibliographic entry for the single best replacement reference.
+        If you cannot find a suitable replacement, return the exact string "No suitable replacement found."
+        """
+
+        client = genai.Client(api_key=GOOGLE_API_KEY)
+        response = client.models.generate_content(
+            model='gemini-1.5-flash',
+            contents=prompt,
+            config={
+                'temperature': 0.2,
+            },
+        )
+        
+        # Clean up the response to ensure it's a single line
+        replacement_text = response.text.strip().replace('\n', ' ')
+        return replacement_text
+
+    except Exception as e:
+        logging.error(f"Failed to find replacement for '{ref.title}': {e}")
+        return "Failed to search for a replacement due to an error."
 
 def search_title(ref: ReferenceExtraction) -> ReferenceCheckResult:
     """Searches for a title using multiple methods."""
@@ -424,12 +457,21 @@ def veriexcite(pdf_path: str) -> Tuple[int, int, List[str], List[str]]:
 
     for idx, ref in enumerate(references):
         result = search_title(ref)
-        list_explanations.append(f"Reference: {ref.bib}\nStatus: {result.status.value}\nExplanation: {result.explanation}\n")
         if result.status == ReferenceStatus.VALIDATED:
             count_verified += 1
+            list_explanations.append(f"Reference: {ref.bib}\nStatus: {result.status.value}\nExplanation: {result.explanation}\n")
         else:
             count_warning += 1
             list_warning.append(ref.bib)
+            # Find a replacement for the invalid/not_found reference
+            replacement_suggestion = find_replacement_reference(ref)
+            list_explanations.append(
+                f"Reference: {ref.bib}\n"
+                f"Status: {result.status.value}\n"
+                f"Explanation: {result.explanation}\n"
+                f"Suggested Replacement: {replacement_suggestion}\n"
+            )
+            
     return count_verified, count_warning, list_warning, list_explanations
 
 def process_pdf_file(pdf_path: str) -> None:
