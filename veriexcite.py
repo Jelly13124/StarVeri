@@ -10,7 +10,7 @@ import logging
 from typing import List, Tuple
 from tenacity import retry, stop_after_attempt, wait_exponential
 from google import genai
-from google.genai.types import Tool, GoogleSearch, ThinkingConfig
+from google.genai.types import Tool, GoogleSearch
 from bs4 import BeautifulSoup
 from rapidfuzz import fuzz
 from enum import Enum
@@ -112,12 +112,12 @@ def split_references(bib_text):
 
     client = genai.Client(api_key=GOOGLE_API_KEY)
     response = client.models.generate_content(
-        model='gemini-2.5-flash',
+        model='gemini-1.5-flash',
         contents=prompt + bib_text,
         generation_config={
             'response_mime_type': 'application/json',
-            'response_schema': list[ReferenceExtraction],
         },
+        request_options={'response_schema': list[ReferenceExtraction]}
     )
 
     references: list[ReferenceExtraction] = response.candidates[0].content.parts[0].text
@@ -289,9 +289,12 @@ def search_title_workshop_paper(ref: ReferenceExtraction) -> ReferenceCheckResul
         client = genai.Client(api_key=GOOGLE_API_KEY)
         google_search_tool = Tool(google_search=GoogleSearch())
         response = client.models.generate_content(
-            model='gemini-2.5-flash',
+            model='gemini-1.5-flash',
             contents=prompt,
-            tools=[google_search_tool]
+            tools=[google_search_tool],
+            generation_config={
+                'temperature': 0,
+            },
         )
 
         answer = normalize_title(response.candidates[0].content.parts[0].text)
@@ -351,9 +354,9 @@ def search_title_google(ref: ReferenceExtraction) -> ReferenceCheckResult:
     client = genai.Client(api_key=GOOGLE_API_KEY)
     google_search_tool = Tool(google_search=GoogleSearch())
     response = client.models.generate_content(
-        model='gemini-2.5-flash',
+        model='gemini-1.5-flash',
         contents=prompt,
-        tools=[google_search_tool]
+        tools=[google_search_tool],
     )
 
     answer = normalize_title(response.candidates[0].content.parts[0].text)
@@ -375,7 +378,7 @@ def find_replacement(ref: ReferenceExtraction) -> str:
     client = genai.Client(api_key=GOOGLE_API_KEY)
     google_search_tool = Tool(google_search=GoogleSearch())
     response = client.models.generate_content(
-        model='gemini-2.5-flash',
+        model='gemini-1.5-flash',
         contents=prompt,
         tools=[google_search_tool]
     )
@@ -460,16 +463,20 @@ def veriexcite(pdf_path: str) -> Tuple[int, int, List[str], List[dict]]:
 
 def process_pdf_file(pdf_path: str) -> None:
     """Check a single PDF file."""
-    count_verified, count_warning, list_warning, list_explanations = veriexcite(pdf_path)
+    count_verified, count_warning, list_warning, list_details = veriexcite(pdf_path)
     print(f"{count_verified} references verified, {count_warning} warnings.")
     if count_warning > 0:
         print("\nWarning List:\n")
         for item in list_warning:
             print(item)
-    print("\nExplanation:\n")
-    for explanation in list_explanations:
-        print(explanation)
-    return count_verified, count_warning, list_warning, list_explanations
+    print("\nDetails:\n")
+    for detail in list_details:
+        print(f"Reference: {detail['bib']}")
+        print(f"Status: {detail['status']}")
+        print(f"Explanation: {detail['explanation']}")
+        if detail['suggestion']:
+            print(f"Suggestion: {detail['suggestion']}")
+        print("\n")
 
 def process_folder(folder_path: str) -> None:
     """Check all PDF files in a folder."""
