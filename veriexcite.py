@@ -291,7 +291,7 @@ def search_title_workshop_paper(ref: ReferenceExtraction) -> ReferenceCheckResul
         client = genai.Client(api_key=GOOGLE_API_KEY)
         google_search_tool = Tool(google_search=GoogleSearch())
         response = client.models.generate_content(
-            model='gemini-2.5-flash',
+            model='gemini-2.0-flash',
             contents=prompt,
             config={
                 'tools': [google_search_tool],
@@ -356,7 +356,7 @@ def search_title_google(ref: ReferenceExtraction) -> ReferenceCheckResult:
     client = genai.Client(api_key=GOOGLE_API_KEY)
     google_search_tool = Tool(google_search=GoogleSearch())
     response = client.models.generate_content(
-        model='gemini-2.5-flash',
+        model='gemini-2.0-flash',
         contents=prompt,
         config={
             'tools': [google_search_tool],
@@ -465,7 +465,8 @@ def process_folder(folder_path: str) -> None:
 
 if __name__ == "__main__":
     ''' Set your Google Gemini API key here '''
-    GOOGLE_API_KEY = "AIzaSyCwjdeVjNusVV0OtMhWebWyAZ9Sn6TuQcY"
+    # Apply for a key at https://ai.google.dev/aistudio with 1500 requests per day for FREE
+    GOOGLE_API_KEY = "YOUR_API_KEY"
     set_google_api_key(GOOGLE_API_KEY)
 
     ''' Example usage #1: check a single PDF file '''
