@@ -72,11 +72,11 @@ def display_replacement_suggestions_for_file(results_df: pd.DataFrame, file_name
                     
                     # Parse and display suggestions nicely
                     suggestions_text = ref['替换建议']
-                    if "找到 3 个替换建议" in suggestions_text:
+                    if "找到 1 个替换建议" in suggestions_text:
                         # Split by suggestions
                         parts = suggestions_text.split("建议 ")
                         if len(parts) > 1:
-                            reasoning = parts[0].replace("找到 3 个替换建议\n", "").replace("推荐理由: ", "")
+                            reasoning = parts[0].replace("找到 1 个替换建议\n", "").replace("推荐理由: ", "")
                             st.write(f"**推荐理由:** {reasoning}")
                             
                             for i, part in enumerate(parts[1:], 1):
@@ -173,22 +173,15 @@ def process_and_verify(bib_text: str) -> pd.DataFrame:
                 suggestion = find_replacement_reference(ref_object)
             
             if suggestion.found:
-                # Format multiple suggestions nicely for CSV export
-                suggestion_text = f"找到 3 个替换建议\n"
+                # Format single suggestion nicely for CSV export
+                suggestion_text = f"找到 1 个替换建议\n"
                 suggestion_text += f"推荐理由: {suggestion.reasoning}\n\n"
                 
-                # Add all 3 suggestions
-                suggestions = [
-                    (suggestion.suggestion1_bib, suggestion.suggestion1_url, suggestion.suggestion1_score),
-                    (suggestion.suggestion2_bib, suggestion.suggestion2_url, suggestion.suggestion2_score),
-                    (suggestion.suggestion3_bib, suggestion.suggestion3_url, suggestion.suggestion3_score)
-                ]
-                
-                for i, (bib, url, score) in enumerate(suggestions, 1):
-                    if bib and bib.strip():  # Only show non-empty suggestions
-                        suggestion_text += f"建议 {i} (匹配度: {score}/100):\n"
-                        suggestion_text += f"文献: {bib}\n"
-                        suggestion_text += f"链接: {url}\n\n"
+                # Add the single suggestion
+                if suggestion.suggestion_bib and suggestion.suggestion_bib.strip():
+                    suggestion_text += f"建议 1 (匹配度: {suggestion.suggestion_score}/100):\n"
+                    suggestion_text += f"文献: {suggestion.suggestion_bib}\n"
+                    suggestion_text += f"链接: {suggestion.suggestion_url}\n\n"
                 
                 df.loc[index, "替换建议"] = suggestion_text
             else:
@@ -231,7 +224,7 @@ def main():
             <ul style="margin: 0; padding-left: 1.2rem;">
                 <li><strong>智能解析</strong>：自动提取PDF中的参考文献列表</li>
                 <li><strong>多源验证</strong>：通过Crossref、arXiv、Google Scholar等验证文献真实性</li>
-                <li><strong>智能替换</strong>：为无效文献提供3个最佳替换建议</li>
+                <li><strong>智能替换</strong>：为无效文献提供最佳替换建议</li>
                 <li><strong>多语言支持</strong>：支持中、英、日、法、德、西、俄、意、葡、韩等8+语言</li>
             </ul>
         </div>
