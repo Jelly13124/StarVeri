@@ -72,22 +72,31 @@ def display_replacement_suggestions_for_file(results_df: pd.DataFrame, file_name
                     
                     # Parse and display suggestions nicely
                     suggestions_text = ref['替换建议']
-                    if "找到 1 个替换建议" in suggestions_text:
+                    if "个替换建议" in suggestions_text:
                         # Split by suggestions
                         parts = suggestions_text.split("建议 ")
                         if len(parts) > 1:
-                            reasoning = parts[0].replace("找到 1 个替换建议\n", "").replace("推荐理由: ", "")
+                            # Extract reasoning
+                            reasoning_part = parts[0]
+                            reasoning = reasoning_part.split("推荐理由: ")[-1] if "推荐理由: " in reasoning_part else "基于主题分析搜索三个学术数据库"
                             st.write(f"**推荐理由:** {reasoning}")
                             
+                            # Display each suggestion
                             for i, part in enumerate(parts[1:], 1):
-                                if "匹配度:" in part:
+                                if "匹配度:" in part and "文献:" in part:
                                     lines = part.strip().split('\n')
                                     if len(lines) >= 3:
-                                        st.write(f"**建议 {i}:**")
-                                        st.write(f"📄 {lines[1].replace('文献: ', '')}")
-                                        st.write(f"🔗 {lines[2].replace('链接: ', '')}")
-                                        st.write(f"⭐ 匹配度: {lines[0].split('匹配度: ')[1].split('/100')[0]}/100")
-                                        st.markdown("---")
+                                        # Extract source and score from first line
+                                        first_line = lines[0]
+                                        if " - " in first_line and "匹配度:" in first_line:
+                                            source = first_line.split(" - ")[1].split(" (匹配度:")[0]
+                                            score = first_line.split("匹配度: ")[1].split("/100")[0]
+                                            
+                                            st.write(f"**建议 {i} - {source}:**")
+                                            st.write(f"📄 {lines[1].replace('文献: ', '')}")
+                                            st.write(f"🔗 {lines[2].replace('链接: ', '')}")
+                                            st.write(f"⭐ 匹配度: {score}/100")
+                                            st.markdown("---")
                     else:
                         st.write(suggestions_text)
                 else:
@@ -169,19 +178,40 @@ def process_and_verify(bib_text: str) -> pd.DataFrame:
         else:
             warning_count += 1
             # Show progress for replacement suggestions
-            with st.spinner(f" 正在为 '{ref_object.title}' 寻找替换建议..."):
-                suggestion = find_replacement_reference(ref_object)
+            progress_container = st.empty()
+            progress_text = progress_container.text(f"正在为 '{ref_object.title}' 寻找替换建议...")
+            
+            def update_progress(message):
+                progress_text.text(message)
+            
+            suggestion = find_replacement_reference(ref_object, progress_callback=update_progress)
+            
+            # Clear progress text
+            progress_container.empty()
             
             if suggestion.found:
-                # Format single suggestion nicely for CSV export
-                suggestion_text = f"找到 1 个替换建议\n"
+                # Format three suggestions nicely for CSV export
+                suggestion_count = sum([1 for s in [suggestion.suggestion1_bib, suggestion.suggestion2_bib, suggestion.suggestion3_bib] if s.strip()])
+                suggestion_text = f"找到 {suggestion_count} 个替换建议\n"
                 suggestion_text += f"推荐理由: {suggestion.reasoning}\n\n"
                 
-                # Add the single suggestion
-                if suggestion.suggestion_bib and suggestion.suggestion_bib.strip():
-                    suggestion_text += f"建议 1 (匹配度: {suggestion.suggestion_score}/100):\n"
-                    suggestion_text += f"文献: {suggestion.suggestion_bib}\n"
-                    suggestion_text += f"链接: {suggestion.suggestion_url}\n\n"
+                # Add arXiv suggestion
+                if suggestion.suggestion1_bib and suggestion.suggestion1_bib.strip():
+                    suggestion_text += f"建议 1 - {suggestion.suggestion1_source} (匹配度: {suggestion.suggestion1_score}/100):\n"
+                    suggestion_text += f"文献: {suggestion.suggestion1_bib}\n"
+                    suggestion_text += f"链接: {suggestion.suggestion1_url}\n\n"
+                
+                # Add Crossref suggestion
+                if suggestion.suggestion2_bib and suggestion.suggestion2_bib.strip():
+                    suggestion_text += f"建议 2 - {suggestion.suggestion2_source} (匹配度: {suggestion.suggestion2_score}/100):\n"
+                    suggestion_text += f"文献: {suggestion.suggestion2_bib}\n"
+                    suggestion_text += f"链接: {suggestion.suggestion2_url}\n\n"
+                
+                # Add Google Scholar suggestion
+                if suggestion.suggestion3_bib and suggestion.suggestion3_bib.strip():
+                    suggestion_text += f"建议 3 - {suggestion.suggestion3_source} (匹配度: {suggestion.suggestion3_score}/100):\n"
+                    suggestion_text += f"文献: {suggestion.suggestion3_bib}\n"
+                    suggestion_text += f"链接: {suggestion.suggestion3_url}\n\n"
                 
                 df.loc[index, "替换建议"] = suggestion_text
             else:
@@ -224,7 +254,7 @@ def main():
             <ul style="margin: 0; padding-left: 1.2rem;">
                 <li><strong>智能解析</strong>：自动提取PDF中的参考文献列表</li>
                 <li><strong>多源验证</strong>：通过Crossref、arXiv、Google Scholar等验证文献真实性</li>
-                <li><strong>智能替换</strong>：为无效文献提供最佳替换建议</li>
+                <li><strong>智能替换</strong>：AI分析主题后从三个数据库提供替换建议</li>
                 <li><strong>多语言支持</strong>：支持中、英、日、法、德、西、俄、意、葡、韩等8+语言</li>
             </ul>
         </div>

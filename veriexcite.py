@@ -223,20 +223,38 @@ class ReplacementSuggestion(BaseModel):
     
     This model provides a comprehensive structure for suggesting alternative
     references when the original reference is invalid or non-existent.
-    The model includes one best-match suggestion with confidence score.
+    The model includes three suggestions from different academic databases.
     
     Attributes:
         found (bool): Whether suitable replacement suggestions were found
-        reasoning (str): Explanation for why this specific paper was chosen
-        suggestion_bib (str): Replacement paper bibliography entry
-        suggestion_url (str): Replacement paper URL
-        suggestion_score (int): Replacement paper match score (1-100)
+        reasoning (str): Explanation for the replacement strategy
+        suggestion1_bib (str): arXiv replacement paper bibliography entry
+        suggestion1_url (str): arXiv replacement paper URL
+        suggestion1_score (int): arXiv replacement paper match score (1-100)
+        suggestion1_source (str): Source database (arXiv)
+        suggestion2_bib (str): Crossref replacement paper bibliography entry
+        suggestion2_url (str): Crossref replacement paper URL
+        suggestion2_score (int): Crossref replacement paper match score (1-100)
+        suggestion2_source (str): Source database (Crossref)
+        suggestion3_bib (str): Google Scholar replacement paper bibliography entry
+        suggestion3_url (str): Google Scholar replacement paper URL
+        suggestion3_score (int): Google Scholar replacement paper match score (1-100)
+        suggestion3_source (str): Source database (Google Scholar)
     """
     found: bool = Field(description="Set to true if suitable replacement is found, otherwise false.")
-    reasoning: str = Field(description="Brief reasoning for why this paper was chosen as replacement.")
-    suggestion_bib: str = Field(description="Replacement paper bibliography entry")
-    suggestion_url: str = Field(description="Replacement paper URL")
-    suggestion_score: int = Field(description="Replacement paper match score (1-100)")
+    reasoning: str = Field(description="Brief reasoning for the replacement strategy.")
+    suggestion1_bib: str = Field(description="arXiv replacement paper bibliography entry")
+    suggestion1_url: str = Field(description="arXiv replacement paper URL")
+    suggestion1_score: int = Field(description="arXiv replacement paper match score (1-100)")
+    suggestion1_source: str = Field(description="Source database (arXiv)")
+    suggestion2_bib: str = Field(description="Crossref replacement paper bibliography entry")
+    suggestion2_url: str = Field(description="Crossref replacement paper URL")
+    suggestion2_score: int = Field(description="Crossref replacement paper match score (1-100)")
+    suggestion2_source: str = Field(description="Source database (Crossref)")
+    suggestion3_bib: str = Field(description="Google Scholar replacement paper bibliography entry")
+    suggestion3_url: str = Field(description="Google Scholar replacement paper URL")
+    suggestion3_score: int = Field(description="Google Scholar replacement paper match score (1-100)")
+    suggestion3_source: str = Field(description="Source database (Google Scholar)")
 
 
 def split_references(bib_text):
@@ -895,157 +913,146 @@ def search_title_google(ref: ReferenceExtraction) -> ReferenceCheckResult:
         return ReferenceCheckResult(status=ReferenceStatus.NOT_FOUND, explanation=f"Google search failed: {e}")
 
 # --- REFINED: find_replacement_reference method ---
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=2, min=5, max=30))
-
-
-def find_replacement_reference(ref: ReferenceExtraction) -> ReplacementSuggestion:
+def find_replacement_reference(ref: ReferenceExtraction, progress_callback=None) -> ReplacementSuggestion:
     """
-    Find a replacement reference using Google Gemini AI with verification.
+    Find replacement references using Google Gemini AI with self-verification.
     
-    This function uses Google Gemini AI with web search capabilities to find
-    a suitable replacement for an invalid reference. It ensures all suggestions
-    have valid DOI or URL and verifies them using Gemini DOI/URL checkers.
+    This function uses Google Gemini AI to search three academic databases
+    (arXiv, Crossref, Google Scholar) and provide three replacement suggestions
+    with self-verification to ensure validity.
     
     Args:
-        ref (ReferenceExtraction): The invalid reference to find a replacement for
+        ref (ReferenceExtraction): The invalid reference to find replacements for
+        progress_callback: Optional callback function for progress updates
         
     Returns:
-        ReplacementSuggestion: The verified replacement suggestion with details and score
+        ReplacementSuggestion: Three replacement suggestions from different databases
         
     Note:
         - Requires a valid Google Gemini API key to be set before calling this function
-        - Will retry up to 3 times to find a valid replacement
-        - All suggestions are verified using Gemini DOI/URL checkers
-        - Only returns suggestions with valid, accessible DOI or URL
+        - Gemini performs self-verification to ensure all suggestions are valid
+        - Returns one suggestion from each database (arXiv, Crossref, Google Scholar)
     """
-    max_attempts = 3
+    if progress_callback:
+        progress_callback("🔍 分析主题并搜索三个学术数据库...")
     
-    for attempt in range(max_attempts):
-        prompt = f"""
-        You are a helpful research assistant. A reference was found to be invalid or non-existent.
-        Your task is to find 1 real, verifiable, and topically similar academic paper to suggest as replacement.
+    prompt = f"""
+    You are a helpful research assistant. A reference was found to be invalid or non-existent.
+    Your task is to find 3 real, verifiable, and topically related academic papers as replacements.
 
-        Original (invalid) reference: "{ref.bib}"
-        Reference type: {ref.type}
-        Attempt: {attempt + 1}/{max_attempts}
+    Original (invalid) reference: "{ref.bib}"
+    Original reference type: {ref.type}
 
-        CRITICAL REQUIREMENTS:
-        1. The replacement MUST have a valid DOI or direct URL
-        2. The DOI/URL MUST be accessible and lead to a real academic paper
-        3. The paper MUST be of the same type as the original reference ({ref.type})
-        4. The paper MUST be on the same topic as the original reference
+    REQUIREMENTS:
+    1. Find exactly 3 replacement suggestions from different databases
+    2. Each suggestion MUST have a valid DOI or direct URL
+    3. All suggestions must be related to the same topic as the original reference
+    4. Perform self-verification to ensure all suggestions are real and accessible
 
-        Please follow these steps:
-        1. Analyze the probable topic from the invalid reference's title and author
-        2. Find 1 well-regarded, real academic paper of the SAME TYPE ({ref.type}) on that same topic
-        3. Ensure the paper has a valid DOI (preferred) or direct URL (arXiv, publisher link, etc.)
-        4. Verify the DOI/URL is accessible by checking it exists
-        5. Provide the details in the requested JSON format
+    DATABASE ASSIGNMENTS:
+    - Suggestion 1: Search arXiv (https://arxiv.org/) for preprints and technical papers
+    - Suggestion 2: Search Crossref (https://search.crossref.org/) for journal articles and conference papers  
+    - Suggestion 3: Search Google Scholar (https://scholar.google.com/) for comprehensive academic search
 
-        DOI/URL REQUIREMENTS:
-        - DOI format: 10.xxxx/xxxxx (e.g., 10.1000/182)
-        - arXiv format: https://arxiv.org/abs/xxxx.xxxxx
-        - Publisher URL: Direct link to the paper on publisher website
-        - NO generic search URLs or broken links
+    SELF-VERIFICATION PROCESS:
+    For each suggestion, you must:
+    1. Verify the DOI/URL is properly formatted and accessible
+    2. Confirm the paper exists and is related to the topic
+    3. Ensure the bibliography information is accurate
+    4. Check that the paper is from the assigned database
 
-        Return exactly 1 suggestion with the highest relevance and quality.
-        The DOI/URL will be verified before acceptance.
-        """
-        
-        try:
-            if not GOOGLE_API_KEY:
-                return ReplacementSuggestion(
-                    found=False,
-                    reasoning="Google API key not set. Please set your API key first.",
-                    suggestion_bib="", 
-                    suggestion_url="", 
-                    suggestion_score=0
-                )
-                
-            client = genai.Client(api_key=GOOGLE_API_KEY)
-            response = client.models.generate_content(
-                model='gemini-2.5-flash', # Using a more powerful model for better reasoning
-                contents=prompt,
-                config={
-                    'response_mime_type': 'application/json',
-                    'response_schema': ReplacementSuggestion,
-                    'temperature': 0.1,
-                },
+    CRITICAL: All three suggestions MUST have valid DOI or URL - without this, the suggestions are useless!
+    
+    DOI FORMAT EXAMPLES:
+    - 10.1000/182 (DOI only)
+    - https://doi.org/10.1000/182 (DOI URL)
+    
+    DIRECT URL EXAMPLES:
+    - https://arxiv.org/abs/2301.12345 (arXiv)
+    - https://ieeexplore.ieee.org/document/123456 (IEEE)
+    - https://link.springer.com/article/10.1000/182 (Springer)
+
+    Return exactly 3 suggestions with the following structure:
+    - suggestion1_*: From arXiv
+    - suggestion2_*: From Crossref  
+    - suggestion3_*: From Google Scholar
+
+    Each suggestion should have:
+    - suggestionX_bib: Complete bibliography entry
+    - suggestionX_url: Valid DOI or direct URL
+    - suggestionX_score: Relevance score (1-100)
+    - suggestionX_source: Database name (arXiv/Crossref/Google Scholar)
+    """
+    
+    try:
+        if not GOOGLE_API_KEY:
+            return ReplacementSuggestion(
+                found=False,
+                reasoning="Google API key not set. Please set your API key first.",
+                suggestion1_bib="", suggestion1_url="", suggestion1_score=0, suggestion1_source="",
+                suggestion2_bib="", suggestion2_url="", suggestion2_score=0, suggestion2_source="",
+                suggestion3_bib="", suggestion3_url="", suggestion3_score=0, suggestion3_source=""
             )
             
-            # Parse the response
-            suggestion = None
-            if hasattr(response, 'parsed') and response.parsed:
-                suggestion = response.parsed
-            else:
-                # Fallback: try to parse the response text
-                import json
-                try:
-                    parsed_data = json.loads(response.text)
-                    suggestion = ReplacementSuggestion(**parsed_data)
-                except Exception as parse_error:
-                    logging.warning(f"Failed to parse replacement response (attempt {attempt + 1}): {parse_error}")
-                    continue
+        client = genai.Client(api_key=GOOGLE_API_KEY)
+        response = client.models.generate_content(
+            model='gemini-2.5-pro',
+            contents=prompt,
+            config={
+                'response_mime_type': 'application/json',
+                'response_schema': ReplacementSuggestion,
+                'temperature': 0.1,
+            },
+        )
+        
+        # Parse the response
+        suggestion = None
+        if hasattr(response, 'parsed') and response.parsed:
+            suggestion = response.parsed
+        else:
+            # Fallback: try to parse the response text
+            import json
+            try:
+                parsed_data = json.loads(response.text)
+                suggestion = ReplacementSuggestion(**parsed_data)
+            except Exception as parse_error:
+                logging.warning(f"Failed to parse replacement response: {parse_error}")
+                return ReplacementSuggestion(
+                    found=False,
+                    reasoning=f"Failed to parse AI response: {parse_error}",
+                    suggestion1_bib="", suggestion1_url="", suggestion1_score=0, suggestion1_source="",
+                    suggestion2_bib="", suggestion2_url="", suggestion2_score=0, suggestion2_source="",
+                    suggestion3_bib="", suggestion3_url="", suggestion3_score=0, suggestion3_source=""
+                )
+        
+        if suggestion and suggestion.found:
+            if progress_callback:
+                progress_callback("✅ 成功找到三个替换建议！")
+            logging.info("Successfully found three replacement suggestions")
+            return suggestion
+        else:
+            if progress_callback:
+                progress_callback("❌ 未能找到有效的替换建议")
+            logging.warning("No valid replacement suggestions found")
+            return ReplacementSuggestion(
+                found=False,
+                reasoning="No valid replacement suggestions found after AI search",
+                suggestion1_bib="", suggestion1_url="", suggestion1_score=0, suggestion1_source="",
+                suggestion2_bib="", suggestion2_url="", suggestion2_score=0, suggestion2_source="",
+                suggestion3_bib="", suggestion3_url="", suggestion3_score=0, suggestion3_source=""
+            )
             
-            # Verify the suggestion using our Gemini DOI/URL checkers
-            if suggestion and suggestion.found and suggestion.suggestion_bib and suggestion.suggestion_url:
-                logging.info(f"Found replacement suggestion on attempt {attempt + 1}, verifying...")
-                
-                # Parse the replacement suggestion to extract title, author, and year
-                try:
-                    parsed_suggestions = split_references(suggestion.suggestion_bib)
-                    if parsed_suggestions and len(parsed_suggestions) > 0:
-                        temp_ref = parsed_suggestions[0]  # Use the first (and only) parsed suggestion
-                        temp_ref.URL = suggestion.suggestion_url  # Set the URL from the suggestion
-                        temp_ref.type = ref.type  # Use the same type as original
-                    else:
-                        logging.warning(f"Failed to parse replacement suggestion bibliography on attempt {attempt + 1}")
-                        continue
-                except Exception as e:
-                    logging.warning(f"Failed to parse replacement suggestion on attempt {attempt + 1}: {e}")
-                    continue
-                
-                # Check if the URL is a DOI
-                if suggestion.suggestion_url.startswith('10.') or 'doi.org/' in suggestion.suggestion_url:
-                    # Extract DOI from URL if needed
-                    doi = suggestion.suggestion_url
-                    if 'doi.org/' in doi:
-                        doi = doi.split('doi.org/')[-1]
-                    
-                    # Verify using Gemini DOI checker
-                    verification_result = verify_doi_with_gemini(temp_ref, doi)
-                    if verification_result and verification_result.status == ReferenceStatus.VALIDATED:
-                        logging.info(f"Replacement suggestion verified successfully on attempt {attempt + 1}")
-                        return suggestion
-                    else:
-                        logging.info(f"Replacement suggestion failed DOI verification on attempt {attempt + 1}, trying again...")
-                        continue
-                else:
-                    # Verify using Gemini URL checker
-                    verification_result = verify_url_with_gemini(temp_ref, suggestion.suggestion_url)
-                    if verification_result and verification_result.status == ReferenceStatus.VALIDATED:
-                        logging.info(f"Replacement suggestion verified successfully on attempt {attempt + 1}")
-                        return suggestion
-                    else:
-                        logging.info(f"Replacement suggestion failed URL verification on attempt {attempt + 1}, trying again...")
-                        continue
-            else:
-                logging.info(f"Invalid suggestion format on attempt {attempt + 1}, trying again...")
-                continue
-                
-        except Exception as e:
-            logging.warning(f"Failed to find replacement (attempt {attempt + 1}): {e}")
-            continue
-    
-    # If we get here, all attempts failed
-    logging.warning(f"Failed to find valid replacement after {max_attempts} attempts")
-    return ReplacementSuggestion(
-        found=False,
-        reasoning=f"Could not find a valid replacement after {max_attempts} attempts. All suggestions failed verification.",
-        suggestion_bib="", 
-        suggestion_url="", 
-        suggestion_score=0
-    )
+    except Exception as e:
+        logging.warning(f"Failed to find replacement: {e}")
+        if progress_callback:
+            progress_callback(f"❌ 搜索失败: {str(e)}")
+        return ReplacementSuggestion(
+            found=False,
+            reasoning=f"Failed to find replacement: {str(e)}",
+            suggestion1_bib="", suggestion1_url="", suggestion1_score=0, suggestion1_source="",
+            suggestion2_bib="", suggestion2_url="", suggestion2_score=0, suggestion2_source="",
+            suggestion3_bib="", suggestion3_url="", suggestion3_score=0, suggestion3_source=""
+        )
 
 def search_title(ref: ReferenceExtraction) -> ReferenceCheckResult:
     """
